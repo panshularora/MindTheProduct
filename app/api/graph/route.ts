@@ -27,53 +27,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
-    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
+    const groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
+    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
 
-    const prompt = `You are a product reasoning agent specializing in dependency graph mapping and conflict resolution.
-You will be provided with an array of product nodes (claims, assumptions, requirements, and feedback signals).
+    const prompt = `You are a product reasoning agent. Analyze these product nodes holistically.
 
-Your task is to analyze these nodes holistically to:
-1. Identify dependency relationships ("dependsOn"):
-   - Decide which requirements depend on which assumptions or claims.
-   - Decide which assumptions depend on which claims.
-   - Populate the "dependsOn" array of each node with the parent node ID(s) it depends on.
-2. Evaluate feedback contradictions:
-   - Check if any "feedback_signal" node (source = 'feedback') contradicts, undermines, or opposes a node sourced from 'prd' or 'feature_request'.
-   - Classify the "status" of each node:
-     * 'stale': The node is directly contradicted, invalidated, or rejected by user feedback (e.g. feedback shows users explicitly dislike or do not want it).
-     * 'contested': The feedback and PRD/feature request disagree, but neither is clearly incorrect (representing a tension, trade-off, or differing views).
-     * 'fresh': The node is not contradicted or undermined by any feedback signals.
-3. Build the flattened "edges" list representing dependency links:
-   - For every dependency link (where node B depends on node A), create an edge object: { "from": "A", "to": "B" }. 
-   - Note: Edges must only represent the "dependsOn" links.
+Nodes: ${JSON.stringify(nodes, null, 2)}
 
-Here is the input array of nodes:
-${JSON.stringify(nodes, null, 2)}
+Tasks:
+1. Determine dependsOn relationships (which requirements depend on which assumptions/claims)
+2. Detect staleness: mark status as 'stale' (directly contradicted by feedback), 'contested' (tension between feedback and PRD), or 'fresh'
+3. Build edges list from dependsOn relationships
 
-Output Format:
-You must respond ONLY with a valid JSON object matching this exact shape:
-{
-  "nodes": [
-    {
-      "id": "n1",
-      "type": "claim",
-      "text": "...",
-      "source": "prd",
-      "confidence": 0.9,
-      "dependsOn": ["n2"],
-      "status": "fresh"
-    }
-  ],
-  "edges": [
-    {
-      "from": "n2",
-      "to": "n1"
-    }
-  ]
-}
-
-Ensure all nodes from the input are returned in the output with their status and dependsOn updated. Do not introduce any text other than the JSON object. Do not include markdown code blocks.`;
+Return ONLY valid JSON:
+{"nodes":[{"id":"n1","type":"claim","text":"...","source":"prd","confidence":0.9,"dependsOn":["n2"],"status":"fresh"}],"edges":[{"from":"n2","to":"n1"}]}`;
 
     let text = '';
     let parsed: GraphData | null = null;
@@ -85,17 +52,18 @@ Ensure all nodes from the input are returned in the output with their status and
       try {
         if (groq) {
           const completion = await groq.chat.completions.create({
-            model: 'llama3-70b-8192',
+            model: 'llama-3.3-70b-versatile',
             messages: [
               {
                 role: 'user',
                 content: attempts === 1
                   ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
               }
             ],
             temperature: 0,
-            response_format: { type: 'json_object' }
+            response_format: { type: 'json_object' },
+            max_tokens: 4000,
           });
           text = completion.choices[0]?.message?.content || '';
         } else if (anthropic) {
@@ -108,11 +76,10 @@ Ensure all nodes from the input are returned in the output with their status and
                 role: 'user',
                 content: attempts === 1
                   ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
               }
             ]
           });
-
           const responseContent = message.content[0];
           if (responseContent.type !== 'text') {
             throw new Error('Anthropic API returned a non-text response.');
@@ -122,7 +89,6 @@ Ensure all nodes from the input are returned in the output with their status and
 
         text = text.trim();
 
-        // Strip markdown code fences if present
         if (text.startsWith('```')) {
           text = text.replace(/^```[a-zA-Z]*\n?/, '');
           text = text.replace(/\n?```$/, '');
@@ -133,9 +99,9 @@ Ensure all nodes from the input are returned in the output with their status and
         if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
           throw new Error('Invalid JSON structure: missing nodes or edges array.');
         }
-        break; // Parse and check succeeded! Exit loop.
+        break;
       } catch (parseError: unknown) {
-        console.warn(`Graph API JSON parsing attempt ${attempts} failed.`, parseError);
+        console.warn(`Graph API attempt ${attempts} failed.`, parseError);
         if (attempts >= maxAttempts) {
           const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
           throw new Error('LLM response was not valid JSON: ' + parseMsg);
@@ -144,10 +110,9 @@ Ensure all nodes from the input are returned in the output with their status and
     }
 
     if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-      throw new Error('Failed to generate dependency graph because of a malformed AI response.');
+      throw new Error('Failed to generate dependency graph: malformed AI response.');
     }
 
-    // Validate nodes format
     const validatedNodes: Node[] = parsed.nodes.map((node: Partial<Node>, idx: number) => {
       const type = (node.type && ['claim', 'assumption', 'requirement', 'feedback_signal'].includes(node.type))
         ? (node.type as 'claim' | 'assumption' | 'requirement' | 'feedback_signal')
@@ -170,13 +135,10 @@ Ensure all nodes from the input are returned in the output with their status and
       } as Node;
     });
 
-    // Validate edges format
-    const validatedEdges = parsed.edges.map((edge: Partial<{ from: string; to: string }>) => {
-      return {
-        from: String(edge.from || ''),
-        to: String(edge.to || '')
-      };
-    }).filter(edge => edge.from && edge.to);
+    const validatedEdges = parsed.edges.map((edge: Partial<{ from: string; to: string }>) => ({
+      from: String(edge.from || ''),
+      to: String(edge.to || '')
+    })).filter(edge => edge.from && edge.to);
 
     return NextResponse.json({
       nodes: validatedNodes,

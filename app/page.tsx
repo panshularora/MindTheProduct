@@ -1,46 +1,60 @@
 'use client';
 
-import { useState } from 'react';
-import { Node, GraphData, DebateLog, RoadmapItem } from '@/lib/types';
+import { useState, useCallback } from 'react';
+import { Node, GraphData, DebateLog, RoadmapItem, ExecutiveSummary } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
-import DebateTranscript from '@/components/DebateTranscript';
+import DebateBoardroom from '@/components/DebateBoardroom';
 import RoadmapView from '@/components/RoadmapView';
+import ExecutiveSummaryCard from '@/components/ExecutiveSummaryCard';
+import DecisionHeatmap from '@/components/DecisionHeatmap';
 
-const STEPS = [
-  { id: 1, name: 'Extracting Nodes', description: 'Parsing claims, assumptions, requirements, and feedback signals' },
-  { id: 2, name: 'Building Graph', description: 'Forming dependency links and evaluating node freshness/staleness' },
-  { id: 3, name: 'Running Agent Debate', description: 'Facilitating Growth vs Eng-Realist vs User-Advocate alignment' },
-  { id: 4, name: 'Synthesizing Roadmap', description: 'Compiling priority ranks and drafting tactical rationale' },
-];
+// ─── Sample Data ──────────────────────────────────────────────────────────────
 
-const SAMPLE_PRD = `PRODUCT REQUIREMENT DOCUMENT: Real-time Collaborative Document Editor
-Goal: Boost user retention and workspace engagement.
-Key Claim: Adding real-time collaborative editing will increase monthly active user retention by 40%.
-Assumption: Users want real-time cursors showing active typing positions for all document types (text, spreadsheet, notes).`;
+const JUDGE_PRD = `PRODUCT REQUIREMENT DOCUMENT: AI Customer Support Agent
+Goal: Reduce support seat costs and lower first-response times by 80%.
+Key Claim: Integrating an automated AI chatbot will handle 50% of incoming queries.
+Assumption: Users prefer immediate AI answers over waiting 15 minutes for a human.
+Success Metric: CSAT maintained above 85%, ticket resolution within 2 minutes.`;
 
-const SAMPLE_FEATURE_REQUESTS = `FEATURE REQUESTS:
-- WebSocket collaboration infrastructure for low-latency syncing.
-- Multi-user editing component with color-coded user cursors.
-- Document permissions and public shareable links.`;
-
-const SAMPLE_FEEDBACK = `USER FEEDBACK SUMMARY:
-- Customer feedback: "Real-time cursors are extremely annoying when several people are in the same document. It clutters the screen. We prefer threaded comment sections to communicate."
-- User interview: "I just need a quick way to invite external clients to review my notes without forcing them to create an account."`;
-
-const TRY_EXAMPLE_PRD = `PRODUCT REQUIREMENT DOCUMENT: AI support agent
-Goal: Reduce customer support seat costs and lower first-response times.
-Key Claim: Integrating an automated AI customer support chatbot will handle 50% of incoming queries, lowering average resolution times by 80%.
-Assumption: Users prefer getting an immediate answer from an AI support agent over waiting 15 minutes in queue for a human agent.`;
-
-const TRY_EXAMPLE_FEATURES = `FEATURE REQUESTS:
+const JUDGE_FEATURES = `FEATURE REQUESTS:
 - Embeddable AI chatbot widget inside the web dashboard.
-- Auto-resolve ticket logic: automatically close support tickets once the AI chatbot provides an answer.
-- Automated API-level action handlers for AI to process user refunds and plan downgrades without staff review.`;
+- Auto-resolve ticket logic: automatically close tickets once AI provides an answer.
+- Automated API-level action handlers for AI to process refunds and plan downgrades without staff review.
+- Escalation path: allow users to request human agent at any point.`;
 
-const TRY_EXAMPLE_FEEDBACK = `USER FEEDBACK & METRICS:
-- CSAT Report: CSAT has dropped from 92% to 68% in the pilot cohort since launching the AI agent.
-- Support Ticket #4820: "Your automated AI chatbot kept repeating the same unhelpful documentation link and then closed my ticket. I couldn't find any button to escape the bot and speak to a human."
-- Support Team Review: Users are creating duplicate tickets because the bot auto-closes threads before they are actually resolved. Billing refund API actions executed by the bot led to $4,000 in incorrect payouts due to lack of verification.`;
+const JUDGE_FEEDBACK = `USER FEEDBACK & METRICS:
+- CSAT Report: Score dropped from 92% to 68% since launching the AI agent.
+- Support Ticket #4820: "The chatbot kept repeating the same useless link and then closed my ticket. I couldn't find any button to speak to a human."
+- Support Team Review: Users are creating duplicate tickets because the bot auto-closes threads before issues are resolved. Billing refund API actions executed by the bot led to $4,000 in incorrect payouts due to lack of verification.
+- Positive: 23% of simple how-to queries were correctly resolved by the bot.`;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function computeExecutiveSummary(nodes: Node[], debateLogs: DebateLog[], roadmap: RoadmapItem[]): ExecutiveSummary {
+  const staleNodes = nodes.filter(n => n.status === 'stale');
+  const contestedNodes = nodes.filter(n => n.status === 'contested');
+  const freshNodes = nodes.filter(n => n.status === 'fresh');
+  const alignmentScore = nodes.length ? Math.round((freshNodes.length / nodes.length) * 100) : 0;
+
+  const topRiskNode = [...staleNodes, ...contestedNodes].sort((a, b) => a.confidence - b.confidence)[0];
+  const topFreshNode = freshNodes.sort((a, b) => b.confidence - a.confidence)[0];
+  const topDebate = debateLogs[0];
+  const topRoadmapItem = roadmap[0];
+
+  return {
+    topRisk: topRiskNode?.text || 'No critical risks detected — all assumptions appear validated.',
+    topOpportunity: topRoadmapItem?.title || topFreshNode?.text || 'Strong alignment across all product nodes.',
+    contestedDecision: topDebate
+      ? `Node ${topDebate.nodeId}: ${nodes.find(n => n.id === topDebate.nodeId)?.text || topDebate.nodeId} — ${topDebate.verdict}`
+      : 'No contested decisions requiring debate.',
+    nextAction: topRoadmapItem?.rationale?.split('.')[0] + '.' || 'Proceed with roadmap execution.',
+    riskScore: Math.min(10, Math.round(((staleNodes.length + contestedNodes.length) / Math.max(nodes.length, 1)) * 10)),
+    opportunityScore: Math.min(10, Math.round((freshNodes.length / Math.max(nodes.length, 1)) * 10)),
+    alignmentScore,
+  };
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Home() {
   const [prd, setPrd] = useState('');
@@ -49,41 +63,35 @@ export default function Home() {
 
   const [loading, setLoading] = useState(false);
   const [activeStep, setActiveStep] = useState<number>(0);
-  
-  // Results states
+
   const [nodes, setNodes] = useState<Node[]>([]);
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [debateLogs, setDebateLogs] = useState<DebateLog[]>([]);
   const [roadmap, setRoadmap] = useState<RoadmapItem[]>([]);
+  const [executiveSummary, setExecutiveSummary] = useState<ExecutiveSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-  const [thinkingAgent, setThinkingAgent] = useState<{ nodeId: string, persona: 'growth' | 'eng_realist' | 'user_advocate' } | null>(null);
+  const [thinkingAgent, setThinkingAgent] = useState<{ nodeId: string; persona: 'growth' | 'eng_realist' | 'user_advocate' } | null>(null);
+  const [activeTab, setActiveTab] = useState<'graph' | 'heatmap'>('graph');
+  const [isJudgeMode, setIsJudgeMode] = useState(false);
 
-  const handleLoadSampleData = () => {
-    setPrd(SAMPLE_PRD);
-    setFeatureRequests(SAMPLE_FEATURE_REQUESTS);
-    setFeedback(SAMPLE_FEEDBACK);
-  };
-
-  const handleLoadTryExample = () => {
-    setPrd(TRY_EXAMPLE_PRD);
-    setFeatureRequests(TRY_EXAMPLE_FEATURES);
-    setFeedback(TRY_EXAMPLE_FEEDBACK);
+  const handleJudgeMode = () => {
+    setPrd(JUDGE_PRD);
+    setFeatureRequests(JUDGE_FEATURES);
+    setFeedback(JUDGE_FEEDBACK);
+    setIsJudgeMode(true);
   };
 
   const handleReferenceSelect = (nodeId: string) => {
     const targetNode = nodes.find(n => n.id === nodeId);
     if (targetNode) {
       setSelectedNode(targetNode);
-      const element = document.getElementById('graph-stage-section');
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      document.getElementById('graph-stage-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
 
-  const runAnalysis = async () => {
+  const runAnalysis = useCallback(async () => {
     setLoading(true);
     setError(null);
     setShowResults(true);
@@ -91,36 +99,40 @@ export default function Home() {
     setGraph(null);
     setDebateLogs([]);
     setRoadmap([]);
+    setExecutiveSummary(null);
     setSelectedNode(null);
     setThinkingAgent(null);
 
     try {
-      // Step 1: Extract
+      // ── Step 1: Extract ────────────────────────────────────────────────────
       setActiveStep(1);
       const extractRes = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prd, featureRequests, feedback }),
       });
-      if (!extractRes.ok) throw new Error('Failed in Node Extraction phase');
+      if (!extractRes.ok) {
+        const errData = await extractRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed in Node Extraction phase');
+      }
       const extractData = await extractRes.json();
       setNodes(extractData.nodes);
 
-      // Step 2: Graph
+      // ── Step 2: Graph ──────────────────────────────────────────────────────
       setActiveStep(2);
       const graphRes = await fetch('/api/graph', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nodes: extractData.nodes }),
       });
-      if (!graphRes.ok) throw new Error('Failed in Graph Construction phase');
-      const graphData = await graphRes.json();
+      if (!graphRes.ok) {
+        const errData = await graphRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed in Graph Construction phase');
+      }
+      const graphData: GraphData = await graphRes.json();
       setGraph(graphData);
-      
-      // Log graph quality to console for verification
-      console.log('Graph Output:', graphData);
 
-      // Step 3: Debate (Streaming turns)
+      // ── Step 3: Debate ─────────────────────────────────────────────────────
       setActiveStep(3);
       const debateRes = await fetch('/api/debate', {
         method: 'POST',
@@ -131,13 +143,14 @@ export default function Home() {
         }),
       });
 
-      if (!debateRes.ok) throw new Error('Failed to start agent debate');
+      if (!debateRes.ok) {
+        const errData = await debateRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to start agent debate');
+      }
 
       const reader = debateRes.body?.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      
-      // Collect logs locally to bypass async state update lags
       const localDebateLogs: DebateLog[] = [];
 
       if (reader) {
@@ -147,13 +160,12 @@ export default function Home() {
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+          buffer = lines.pop() || '';
 
           for (const line of lines) {
             if (!line.trim()) continue;
             try {
               const data = JSON.parse(line);
-              
               if (data.type === 'start_debate') {
                 if (!localDebateLogs.some(log => log.nodeId === data.nodeId)) {
                   localDebateLogs.push({ nodeId: data.nodeId, turns: [], verdict: '' });
@@ -164,27 +176,21 @@ export default function Home() {
               } else if (data.type === 'turn') {
                 setThinkingAgent(null);
                 const log = localDebateLogs.find(l => l.nodeId === data.nodeId);
-                if (log) {
-                  log.turns.push(data.turn);
-                }
+                if (log) log.turns.push(data.turn);
                 setDebateLogs([...localDebateLogs]);
               } else if (data.type === 'verdict') {
                 const log = localDebateLogs.find(l => l.nodeId === data.nodeId);
-                if (log) {
-                  log.verdict = data.verdict;
-                }
+                if (log) log.verdict = data.verdict;
                 setDebateLogs([...localDebateLogs]);
               } else if (data.type === 'complete') {
                 setThinkingAgent(null);
               }
-            } catch (err) {
-              console.error('Failed to parse line:', line, err);
-            }
+            } catch { /* ignore malformed lines */ }
           }
         }
       }
 
-      // Step 4: Synthesize
+      // ── Step 4: Synthesize ─────────────────────────────────────────────────
       setActiveStep(4);
       const synthRes = await fetch('/api/synthesize', {
         method: 'POST',
@@ -192,462 +198,427 @@ export default function Home() {
         body: JSON.stringify({
           graphData,
           debateLogs: localDebateLogs,
-          originalFeatureRequests: featureRequests
+          originalFeatureRequests: featureRequests,
         }),
       });
-      if (!synthRes.ok) throw new Error('Failed in Roadmap Synthesis phase');
+      if (!synthRes.ok) {
+        const errData = await synthRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed in Roadmap Synthesis phase');
+      }
       const synthData = await synthRes.json();
       setRoadmap(synthData.roadmap);
 
-      setActiveStep(5); // Finished
+      // ── Executive Summary ──────────────────────────────────────────────────
+      const summary = computeExecutiveSummary(graphData.nodes, localDebateLogs, synthData.roadmap);
+      setExecutiveSummary(summary);
+
+      setActiveStep(5);
     } catch (err: unknown) {
       console.error(err);
-      setError(err instanceof Error ? err.message : 'An error occurred during analysis.');
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred.');
       setActiveStep(0);
     } finally {
       setLoading(false);
     }
-  };
+  }, [prd, featureRequests, feedback]);
 
-  const getSourceBadgeColor = (source: string) => {
-    switch (source) {
-      case 'prd': return 'bg-blue-900/40 text-blue-300 border-blue-800';
-      case 'feature_request': return 'bg-amber-900/40 text-amber-300 border-amber-800';
-      case 'feedback': return 'bg-purple-900/40 text-purple-300 border-purple-800';
-      default: return 'bg-slate-800 text-slate-300 border-slate-700';
-    }
-  };
+  const staleCount = nodes.filter(n => n.status === 'stale').length;
+  const contestedCount = nodes.filter(n => n.status === 'contested').length;
+  const freshCount = nodes.filter(n => n.status === 'fresh').length;
 
-  const getStatusBadgeColor = (status: string) => {
-    switch (status) {
-      case 'fresh': return 'bg-emerald-950 text-emerald-300 border-emerald-800';
-      case 'stale': return 'bg-amber-950 text-amber-300 border-amber-800/80';
-      case 'contested': return 'bg-rose-950 text-rose-300 border-rose-800';
-      default: return 'bg-slate-900 text-slate-400 border-slate-800';
-    }
-  };
-
-
+  const STEPS = [
+    { id: 1, name: 'Extracting Nodes', icon: '📊', color: '#2dd4bf' },
+    { id: 2, name: 'Building Graph', icon: '🕸️', color: '#34d399' },
+    { id: 3, name: 'Agent Debate', icon: '⚡', color: '#a78bfa' },
+    { id: 4, name: 'Synthesizing Roadmap', icon: '🗺️', color: '#60a5fa' },
+  ];
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-teal-500/30 selection:text-teal-200">
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/40 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-teal-500 to-emerald-400 flex items-center justify-center shadow-lg shadow-teal-500/10">
-              <svg className="w-6 h-6 text-slate-950" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+    <div className="app-root">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <header className="app-header">
+        <div className="header-inner">
+          <div className="header-brand">
+            <div className="header-logo">
+              <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
               </svg>
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
-                Product Council AI
-              </h1>
-              <p className="text-xs text-slate-400">4-Stage AI Alignment Engine: Resolving PRD Contradictions, Debating Tradeoffs, and Synthesizing a Verified Roadmap</p>
+              <h1 className="header-title">Product Council AI</h1>
+              <p className="header-tagline">AI Executive Boardroom · 4-Stage Decision Engine</p>
             </div>
           </div>
-          <button
-            onClick={handleLoadSampleData}
-            className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white transition-all"
-          >
-            Load Sample Data
-          </button>
+          <div className="header-actions">
+            <button onClick={handleJudgeMode} className="btn-judge" disabled={loading}>
+              <span>⚡</span> Judge Mode Demo
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Input Forms */}
-        <section className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-6 shadow-xl">
-          <h2 className="text-lg font-semibold text-slate-200 mb-4 flex items-center space-x-2">
-            <span>Inputs Configuration</span>
-          </h2>
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="flex flex-col space-y-2">
-              <label htmlFor="prd-input" className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Paste your PRD
-              </label>
-              <textarea
-                id="prd-input"
-                rows={7}
-                value={prd}
-                onChange={(e) => setPrd(e.target.value)}
-                placeholder="Paste key claims, metrics, and core assumptions from your Product Requirement Document..."
-                className="w-full rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-sm text-slate-300 placeholder-slate-600 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 transition-all font-mono"
-              />
-            </div>
-
-            <div className="flex flex-col space-y-2">
-              <label htmlFor="features-input" className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Paste Feature Requests
-              </label>
-              <textarea
-                id="features-input"
-                rows={7}
-                value={featureRequests}
-                onChange={(e) => setFeatureRequests(e.target.value)}
-                placeholder="Paste product ideas, backlog requirements, or technical specs..."
-                className="w-full rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-sm text-slate-300 placeholder-slate-600 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 transition-all font-mono"
-              />
-            </div>
-
-            <div className="flex flex-col space-y-2">
-              <label htmlFor="feedback-input" className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                Paste User Feedback
-              </label>
-              <textarea
-                id="feedback-input"
-                rows={7}
-                value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
-                placeholder="Paste raw customer interview notes, Support tickets, or App Store reviews..."
-                className="w-full rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-sm text-slate-300 placeholder-slate-600 focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500 transition-all font-mono"
-              />
-            </div>
+      <main className="app-main">
+        {/* ── Input Section ─────────────────────────────────────────────────── */}
+        <section className="card input-section">
+          <div className="input-section-header">
+            <h2 className="section-title">
+              <span className="section-title-icon">📝</span>
+              Configure Your Product Council
+            </h2>
+            {isJudgeMode && (
+              <div className="judge-mode-badge">
+                <span className="judge-mode-dot" />
+                Judge Mode Active
+              </div>
+            )}
           </div>
 
-          <div className="mt-6 flex flex-col sm:flex-row justify-between items-center gap-4">
-            <button
-              onClick={handleLoadTryExample}
-              disabled={loading}
-              className="w-full sm:w-auto text-xs font-semibold px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white transition-all flex items-center justify-center space-x-1.5"
-            >
-              <svg className="w-4 h-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-              </svg>
-              <span>Try SaaS Chatbot Example</span>
-            </button>
+          <div className="input-grid">
+            {[
+              { id: 'prd-input', label: 'Product Requirement Document', placeholder: 'Paste key claims, metrics, and core assumptions from your PRD...', value: prd, setter: setPrd, color: '#60a5fa' },
+              { id: 'features-input', label: 'Feature Requests', placeholder: 'Paste product ideas, backlog items, or technical specs...', value: featureRequests, setter: setFeatureRequests, color: '#fb923c' },
+              { id: 'feedback-input', label: 'User Feedback & Signals', placeholder: 'Paste raw customer feedback, CSAT data, support tickets...', value: feedback, setter: setFeedback, color: '#a78bfa' },
+            ].map(({ id, label, placeholder, value, setter, color }) => (
+              <div key={id} className="input-field-wrapper">
+                <label htmlFor={id} className="input-label" style={{ color }}>
+                  <span className="input-label-dot" style={{ background: color }} />
+                  {label}
+                </label>
+                <textarea
+                  id={id}
+                  rows={8}
+                  value={value}
+                  onChange={e => setter(e.target.value)}
+                  placeholder={placeholder}
+                  className="input-textarea"
+                  style={{ '--focus-color': color } as React.CSSProperties}
+                />
+                <div className="input-char-count" style={{ color: value.length > 0 ? color : '#475569' }}>
+                  {value.length > 0 ? `${value.length} chars` : ''}
+                </div>
+              </div>
+            ))}
+          </div>
 
+          <div className="input-actions">
             <button
               onClick={runAnalysis}
               disabled={loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()}
-              className={`w-full sm:w-auto px-6 py-3 rounded-xl font-semibold shadow-lg transition-all flex items-center justify-center space-x-2 border border-teal-400/20 ${
-                loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()
-                  ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-transparent'
-                  : 'bg-gradient-to-r from-teal-500 to-emerald-400 text-slate-950 hover:from-teal-400 hover:to-emerald-300 active:scale-[0.98]'
-              }`}
+              className="btn-run"
+              id="run-analysis-btn"
             >
               {loading ? (
                 <>
-                  <svg className="animate-spin h-5 w-5 text-slate-950" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <span>Analyzing...</span>
+                  <span className="btn-spinner" />
+                  <span>Council in session...</span>
                 </>
               ) : (
                 <>
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                  <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
-                  <span>Run Pipeline Analysis</span>
+                  <span>Convene the AI Boardroom</span>
                 </>
               )}
             </button>
           </div>
         </section>
 
-        {/* Error State */}
+        {/* ── Error ──────────────────────────────────────────────────────────── */}
         {error && (
-          <div className="p-4 rounded-xl border border-rose-800/80 bg-rose-950/40 text-rose-200 text-sm flex items-center space-x-3">
-            <svg className="w-5 h-5 text-rose-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+          <div className="error-banner">
+            <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span>{error}</span>
+            <span><strong>Pipeline Error:</strong> {error}</span>
           </div>
         )}
 
-        {/* Loading Pipeline Steps */}
+        {/* ── Pipeline Progress ──────────────────────────────────────────────── */}
         {loading && (
-          <section className="bg-slate-900/40 border border-slate-800 rounded-2xl p-8 shadow-inner max-w-2xl mx-auto space-y-6">
-            <h3 className="text-center text-sm font-semibold tracking-wider text-slate-400 uppercase">
-              AI Decision Council Running
-            </h3>
-            <div className="relative">
-              {/* Central connection line */}
-              <div className="absolute left-6 top-4 bottom-4 w-0.5 bg-slate-800" />
-
-              <div className="space-y-6 relative">
-                {STEPS.map((step) => {
-                  const isActive = activeStep === step.id;
-                  const isCompleted = activeStep > step.id;
-
-                  return (
-                    <div key={step.id} className="flex items-start space-x-4 transition-opacity duration-300">
-                      <div className={`w-12 h-12 rounded-full border flex items-center justify-center flex-shrink-0 transition-all ${
-                        isActive
-                          ? 'bg-teal-500/20 border-teal-400 text-teal-400 shadow-lg shadow-teal-400/10 scale-105'
-                          : isCompleted
-                          ? 'bg-emerald-500 border-emerald-500 text-slate-950'
-                          : 'bg-slate-950 border-slate-800 text-slate-600'
-                      }`}>
-                        {isCompleted ? (
-                          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        ) : isActive ? (
-                          <span className="relative flex h-3 w-3">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-3 w-3 bg-teal-500"></span>
-                          </span>
-                        ) : (
-                          <span className="text-sm font-bold">{step.id}</span>
-                        )}
-                      </div>
-                      <div className="pt-1.5">
-                        <p className={`text-sm font-semibold transition-colors ${
-                          isActive ? 'text-teal-400' : isCompleted ? 'text-slate-200' : 'text-slate-500'
-                        }`}>
-                          {step.name}
-                        </p>
-                        <p className="text-xs text-slate-400/80 mt-0.5">{step.description}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
+          <div className="pipeline-progress-bar">
+            {STEPS.map((step, i) => {
+              const isDone = activeStep > step.id;
+              const isActive = activeStep === step.id;
+              return (
+                <div key={step.id} className="pipeline-step-wrapper">
+                  <div className={`pipeline-step ${isActive ? 'pipeline-step-active' : isDone ? 'pipeline-step-done' : ''}`}
+                    style={{ '--step-color': step.color } as React.CSSProperties}
+                  >
+                    <span className="pipeline-step-icon">{isDone ? '✓' : step.icon}</span>
+                    <span className="pipeline-step-name">{step.name}</span>
+                    {isActive && <span className="pipeline-step-pulse" style={{ background: step.color }} />}
+                  </div>
+                  {i < STEPS.length - 1 && (
+                    <div className="pipeline-connector" style={{ background: isDone ? step.color : '#1e293b' }} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
 
-        {/* Results Sections */}
+        {/* ── Results ────────────────────────────────────────────────────────── */}
         {showResults && (
-          <div className="space-y-12 animate-fadeIn">
-            {/* Stage 1 & 2: Nodes & Dependency Graph */}
-            <div id="graph-stage-section" className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Extraction list */}
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
-                <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-pulse" />
-                  <span>Stage 1: Extracted Structured Nodes</span>
-                </h3>
-                <div className="overflow-y-auto pr-2 space-y-4 flex-1">
-                  {nodes.length > 0 ? (
-                    nodes.map((node) => (
-                      <div
-                        key={node.id}
-                        onClick={() => setSelectedNode(node)}
-                        className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                          selectedNode?.id === node.id
-                            ? 'border-teal-400 bg-slate-900 shadow-md shadow-teal-950/20'
-                            : node.status === 'contested'
-                            ? 'bg-rose-950/20 border-rose-900/40 hover:border-rose-800'
-                            : node.status === 'stale'
-                            ? 'bg-amber-950/20 border-amber-900/40 hover:border-amber-800'
-                            : 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                          <div className="flex items-center space-x-2">
-                            <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
-                              {node.id}
-                            </span>
-                            <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded ${getSourceBadgeColor(node.source)}`}>
-                              {node.source}
-                            </span>
-                            <span className="text-xs text-slate-400 font-mono">
-                              {(node.confidence * 100).toFixed(0)}% confidence
-                            </span>
-                          </div>
-                          <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded-full ${getStatusBadgeColor(node.status)}`}>
-                            {node.status}
-                          </span>
+          <div className="results-container">
+            {/* Node Stats Bar */}
+            {nodes.length > 0 && (
+              <div className="stats-bar">
+                <div className="stats-bar-item">
+                  <span className="stats-number">{nodes.length}</span>
+                  <span className="stats-label">Total Nodes</span>
+                </div>
+                <div className="stats-divider" />
+                <div className="stats-bar-item">
+                  <span className="stats-number" style={{ color: '#34d399' }}>{freshCount}</span>
+                  <span className="stats-label">Fresh</span>
+                </div>
+                <div className="stats-divider" />
+                <div className="stats-bar-item">
+                  <span className="stats-number" style={{ color: '#fb923c' }}>{contestedCount}</span>
+                  <span className="stats-label">Contested</span>
+                </div>
+                <div className="stats-divider" />
+                <div className="stats-bar-item">
+                  <span className="stats-number" style={{ color: '#f87171' }}>{staleCount}</span>
+                  <span className="stats-label">Stale</span>
+                </div>
+                <div className="stats-divider" />
+                <div className="stats-bar-item">
+                  <span className="stats-number" style={{ color: '#a78bfa' }}>{debateLogs.length}</span>
+                  <span className="stats-label">Debates</span>
+                </div>
+                <div className="stats-divider" />
+                <div className="stats-bar-item">
+                  <span className="stats-number" style={{ color: '#60a5fa' }}>{roadmap.length}</span>
+                  <span className="stats-label">Roadmap Items</span>
+                </div>
+              </div>
+            )}
+
+            {/* ── Stage 1&2: Nodes + Graph ───────────────────────────────────── */}
+            <div className="stage-section-label">
+              <span className="stage-number">01</span>
+              <span className="stage-name">Structured Intelligence Extraction & Dependency Graph</span>
+            </div>
+
+            <div id="graph-stage-section" className="two-col-grid">
+              {/* Nodes List */}
+              <div className="card node-list-card">
+                <div className="card-header">
+                  <span className="card-header-dot" style={{ background: '#2dd4bf' }} />
+                  <span>Extracted Nodes</span>
+                  {nodes.length > 0 && <span className="card-header-count">{nodes.length}</span>}
+                </div>
+                <div className="node-list-scroll">
+                  {nodes.length > 0 ? nodes.map(node => (
+                    <button
+                      key={node.id}
+                      onClick={() => setSelectedNode(node)}
+                      className={`node-card ${selectedNode?.id === node.id ? 'node-card-selected' : ''} node-card-${node.status}`}
+                    >
+                      <div className="node-card-top">
+                        <div className="node-card-badges">
+                          <span className="badge badge-id">{node.id}</span>
+                          <span className={`badge badge-source-${node.source}`}>{node.source.replace('_', ' ')}</span>
                         </div>
-                        <p className="text-sm text-slate-200">{node.text}</p>
-                        <div className="mt-2 text-[10px] font-mono text-slate-400">
-                          Type: <span className="text-slate-300 font-semibold">{node.type}</span>
-                          {node.dependsOn.length > 0 && (
-                            <span className="ml-2">
-                              Depends on: <span className="text-teal-400">{node.dependsOn.join(', ')}</span>
-                            </span>
-                          )}
+                        <span className={`badge badge-status-${node.status}`}>
+                          {node.status === 'stale' ? '🔴' : node.status === 'contested' ? '🟡' : '🟢'} {node.status}
+                        </span>
+                      </div>
+                      <p className="node-card-text">{node.text}</p>
+                      <div className="node-card-footer">
+                        <span className="node-card-type">{node.type}</span>
+                        <div className="node-confidence-bar-wrapper">
+                          <div className="node-confidence-bar">
+                            <div
+                              className="node-confidence-fill"
+                              style={{
+                                width: `${node.confidence * 100}%`,
+                                background: node.confidence >= 0.7 ? '#34d399' : node.confidence >= 0.4 ? '#fb923c' : '#f87171'
+                              }}
+                            />
+                          </div>
+                          <span className="node-confidence-pct">{(node.confidence * 100).toFixed(0)}%</span>
                         </div>
                       </div>
-                    ))
-                  ) : activeStep === 1 ? (
-                    <div className="h-full flex flex-col items-center justify-center space-y-4 p-8 text-center">
-                      <svg className="animate-spin h-8 w-8 text-teal-400" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      <p className="text-sm text-slate-300 font-medium">Extracting structured claims, assumptions, and signals...</p>
-                      <p className="text-xs text-slate-500 max-w-xs leading-relaxed">Claude is reading the inputs to identify atomic product council nodes.</p>
-                    </div>
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-slate-500 text-sm p-8 text-center italic">
-                      Waiting to start extraction...
+                    </button>
+                  )) : (
+                    <div className="card-loading-state">
+                      {activeStep === 1 ? (
+                        <>
+                          <div className="loading-spinner" style={{ borderTopColor: '#2dd4bf' }} />
+                          <p>Extracting structured nodes...</p>
+                        </>
+                      ) : (
+                        <p className="card-pending">Awaiting extraction...</p>
+                      )}
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Dependency Graph visual panel */}
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
-                <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Stage 2: Dependency Graph & Conflicts</span>
-                </h3>
-                <div className="flex-1 flex flex-col space-y-4 min-h-0">
-                  {graph ? (
-                    <>
-                      <DependencyGraph
-                        data={graph}
-                        onNodeSelect={setSelectedNode}
-                        selectedNode={selectedNode}
-                      />
-                      
-                      {/* Node Details Sub-panel */}
-                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex-1 overflow-y-auto font-sans">
-                        {selectedNode ? (
-                          <div className="space-y-3 text-left">
-                            <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
-                              <div className="flex items-center space-x-2">
-                                <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded font-bold">
-                                  {selectedNode.id}
-                                </span>
-                                <span className={`text-[10px] font-bold uppercase border px-2 py-0.5 rounded ${getSourceBadgeColor(selectedNode.source)}`}>
-                                  {selectedNode.source}
-                                </span>
-                                <span className="text-xs text-slate-400">
-                                  {(selectedNode.confidence * 100).toFixed(0)}% confidence
-                                </span>
+              {/* Graph / Heatmap */}
+              <div className="card graph-card">
+                <div className="card-header">
+                  <span className="card-header-dot" style={{ background: '#34d399' }} />
+                  <div className="tab-group">
+                    <button
+                      onClick={() => setActiveTab('graph')}
+                      className={`tab-btn ${activeTab === 'graph' ? 'tab-btn-active' : ''}`}
+                    >
+                      Dependency Graph
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('heatmap')}
+                      className={`tab-btn ${activeTab === 'heatmap' ? 'tab-btn-active' : ''}`}
+                    >
+                      Decision Heatmap
+                    </button>
+                  </div>
+                </div>
+
+                <div className="graph-card-body">
+                  {activeTab === 'graph' ? (
+                    graph ? (
+                      <>
+                        <DependencyGraph data={graph} onNodeSelect={setSelectedNode} selectedNode={selectedNode} />
+                        {selectedNode && (
+                          <div className="node-detail-panel">
+                            <div className="node-detail-header">
+                              <div className="node-card-badges">
+                                <span className="badge badge-id">{selectedNode.id}</span>
+                                <span className={`badge badge-source-${selectedNode.source}`}>{selectedNode.source.replace('_', ' ')}</span>
                               </div>
-                              <span className={`text-[10px] font-bold uppercase border px-2 py-0.5 rounded-full ${getStatusBadgeColor(selectedNode.status)}`}>
-                                {selectedNode.status.toUpperCase()}
-                              </span>
+                              <span className={`badge badge-status-${selectedNode.status}`}>{selectedNode.status}</span>
                             </div>
-                            <div>
-                              <span className="text-slate-400 font-bold block text-[10px] uppercase mb-1">Text Summary</span>
-                              <p className="text-sm text-slate-200 leading-relaxed">{selectedNode.text}</p>
-                            </div>
-                            <div className="grid grid-cols-2 gap-4 pt-1 text-xs">
+                            <p className="node-detail-text">{selectedNode.text}</p>
+                            <div className="node-detail-meta">
                               <div>
-                                <span className="text-slate-500 font-bold block text-[10px] uppercase">Node Type</span>
-                                <span className="text-slate-300 font-semibold">{selectedNode.type}</span>
+                                <span className="node-detail-meta-label">Type</span>
+                                <span className="node-detail-meta-val">{selectedNode.type}</span>
                               </div>
                               <div>
-                                <span className="text-slate-500 font-bold block text-[10px] uppercase">Depends On</span>
-                                <span className="text-slate-300 font-semibold font-mono">
-                                  {selectedNode.dependsOn.length > 0 ? selectedNode.dependsOn.join(', ') : 'None'}
+                                <span className="node-detail-meta-label">Confidence</span>
+                                <span className="node-detail-meta-val">{(selectedNode.confidence * 100).toFixed(0)}%</span>
+                              </div>
+                              <div>
+                                <span className="node-detail-meta-label">Depends On</span>
+                                <span className="node-detail-meta-val">
+                                  {selectedNode.dependsOn.length > 0 ? selectedNode.dependsOn.join(', ') : '—'}
                                 </span>
                               </div>
                             </div>
-                          </div>
-                        ) : (
-                          <div className="h-full flex items-center justify-center text-slate-500 text-xs italic text-center p-4">
-                            Click on any node in the graph or the list to inspect its properties and conflicts.
                           </div>
                         )}
+                      </>
+                    ) : (
+                      <div className="card-loading-state">
+                        {activeStep >= 2 ? (
+                          <>
+                            <div className="loading-spinner" style={{ borderTopColor: '#34d399' }} />
+                            <p>Building dependency matrix...</p>
+                          </>
+                        ) : (
+                          <p className="card-pending">Awaiting node extraction...</p>
+                        )}
                       </div>
-                    </>
-                  ) : activeStep === 2 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-400 text-sm space-y-3 p-8 text-center">
-                      <svg className="animate-spin h-8 w-8 text-emerald-400" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                      </svg>
-                      <span className="font-mono text-xs">Building dependency matrix & conflict edges...</span>
-                    </div>
+                    )
                   ) : (
-                    <div className="h-full flex items-center justify-center text-slate-500 text-sm p-8 text-center italic">
-                      {activeStep > 2 ? 'No graph data was generated.' : 'Waiting for node extraction to complete...'}
-                    </div>
+                    nodes.length > 0 ? (
+                      <DecisionHeatmap nodes={graph?.nodes || nodes} />
+                    ) : (
+                      <div className="card-loading-state">
+                        <p className="card-pending">Awaiting node extraction...</p>
+                      </div>
+                    )
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Visual connector */}
-            <div className="flex flex-col items-center justify-center my-6">
-              <div className="w-0.5 h-10 bg-gradient-to-b from-emerald-500 to-violet-500" />
-              <div className="text-[10px] font-mono text-slate-500 tracking-widest uppercase mt-1">Conflict Detection & Alignment Debate</div>
+            {/* ── Pipeline Connector ─────────────────────────────────────────── */}
+            <div className="pipeline-connector-visual">
+              <div className="pipeline-connector-line gradient-teal-violet" />
+              <span className="pipeline-connector-label">AI Boardroom Convenes</span>
+              <div className="pipeline-connector-line gradient-violet-blue" />
             </div>
 
-            {/* Stage 3: Sequential Agent Debate */}
-            <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-              <h3 className="text-base font-bold text-slate-200 flex items-center space-x-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-violet-400 animate-pulse" />
-                <span>Stage 3: 3-Agent Alignment Debate Logs</span>
-              </h3>
-
-              {debateLogs.length > 0 ? (
-                <div className="space-y-6 animate-fadeIn">
-                  {debateLogs.map((log, index) => {
-                    const disputedNode = nodes.find(n => n.id === log.nodeId);
-                    return (
-                      <div key={index} className="space-y-4">
-                        <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/80 flex items-start space-x-3">
-                          <div className="w-8 h-8 rounded-lg bg-rose-950/30 border border-rose-800/80 flex items-center justify-center flex-shrink-0 text-rose-300 font-mono text-xs">
-                            !
-                          </div>
-                          <div className="text-left">
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Debate Topic: Contested Item ({log.nodeId})</p>
-                            <p className="text-sm text-slate-200 mt-1">{disputedNode?.text}</p>
-                          </div>
-                        </div>
-
-                        <DebateTranscript
-                          turns={log.turns}
-                          verdict={log.verdict}
-                          isThinking={thinkingAgent?.nodeId === log.nodeId ? thinkingAgent.persona : null}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : activeStep === 3 || thinkingAgent !== null ? (
-                <div className="p-12 border border-slate-800 bg-slate-950/40 rounded-xl text-center flex flex-col items-center justify-center space-y-4">
-                  <svg className="animate-spin h-8 w-8 text-violet-400" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <p className="text-slate-300 text-sm">Growth vs. Engineering vs. UX Persona debate session in progress...</p>
-                  <p className="text-xs text-slate-500 max-w-xs leading-relaxed font-sans">Claude agents are sequentially arguing alignment on contested/stale items.</p>
-                </div>
-              ) : activeStep > 3 ? (
-                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
-                  No stale or contested claims or assumptions detected in the dependency graph. Agent debate is not required.
-                </div>
-              ) : (
-                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
-                  Waiting for dependency graph analysis to detect contested items...
-                </div>
-              )}
-            </section>
-
-            {/* Visual connector */}
-            <div className="flex flex-col items-center justify-center my-6">
-              <div className="w-0.5 h-10 bg-gradient-to-b from-violet-500 to-blue-500" />
-              <div className="text-[10px] font-mono text-slate-500 tracking-widest uppercase mt-1">Strategic Roadmap Synthesis</div>
+            {/* ── Stage 3: Debate Boardroom ──────────────────────────────────── */}
+            <div className="stage-section-label">
+              <span className="stage-number">02</span>
+              <span className="stage-name">AI Boardroom Debate · 3-Agent Alignment Council</span>
             </div>
 
-            {/* Stage 4: Synthesized Roadmap */}
-            <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-              <h3 className="text-base font-bold text-slate-200 flex items-center space-x-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
-                <span>Stage 4: Synthesized & Ranked Roadmap</span>
-              </h3>
+            <div className="card boardroom-card">
+              <div className="card-header">
+                <span className="card-header-dot" style={{ background: '#a78bfa' }} />
+                <span>Live Debate Transcripts</span>
+                {debateLogs.length > 0 && <span className="card-header-count">{debateLogs.length} sessions</span>}
+                {thinkingAgent && <span className="live-badge">● LIVE</span>}
+              </div>
+              <DebateBoardroom
+                logs={debateLogs}
+                nodes={graph?.nodes || nodes}
+                thinkingAgent={thinkingAgent}
+                isLoading={loading && activeStep === 3}
+              />
+            </div>
 
-              {roadmap.length > 0 ? (
-                <RoadmapView items={roadmap} onReferenceSelect={handleReferenceSelect} />
-              ) : activeStep === 4 ? (
-                <div className="p-12 border border-slate-800 bg-slate-950/40 rounded-xl text-center flex flex-col items-center justify-center space-y-4">
-                  <svg className="animate-spin h-8 w-8 text-blue-400" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <p className="text-slate-300 text-sm">Synthesizing final prioritized product roadmap...</p>
-                  <p className="text-xs text-slate-500 max-w-xs leading-relaxed font-sans">Claude is reviewing the graph connections, original inputs, and debate verdicts to generate a ranked features list.</p>
+            {/* ── Stage 4: Executive Summary ────────────────────────────────── */}
+            {executiveSummary && (
+              <>
+                <div className="pipeline-connector-visual">
+                  <div className="pipeline-connector-line gradient-violet-blue" />
+                  <span className="pipeline-connector-label">Synthesis Complete</span>
+                  <div className="pipeline-connector-line gradient-blue-teal" />
                 </div>
-              ) : (
-                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
-                  Waiting for agent debate and verdicts to complete...
+
+                <div className="stage-section-label">
+                  <span className="stage-number">03</span>
+                  <span className="stage-name">Executive Decision Brief</span>
                 </div>
-              )}
-            </section>
+
+                <ExecutiveSummaryCard summary={executiveSummary} />
+              </>
+            )}
+
+            {/* ── Stage 4: Roadmap ───────────────────────────────────────────── */}
+            {(roadmap.length > 0 || activeStep === 4) && (
+              <>
+                <div className="stage-section-label" style={{ marginTop: '0.5rem' }}>
+                  <span className="stage-number">04</span>
+                  <span className="stage-name">Synthesized & Ranked Product Roadmap</span>
+                </div>
+
+                <div className="card">
+                  <div className="card-header">
+                    <span className="card-header-dot" style={{ background: '#60a5fa' }} />
+                    <span>Priority Roadmap</span>
+                    {roadmap.length > 0 && <span className="card-header-count">{roadmap.length} items</span>}
+                    {loading && activeStep === 4 && <span className="live-badge" style={{ color: '#60a5fa', borderColor: 'rgba(96,165,250,0.3)' }}>● SYNTHESIZING</span>}
+                  </div>
+                  {roadmap.length > 0 ? (
+                    <RoadmapView items={roadmap} onReferenceSelect={handleReferenceSelect} />
+                  ) : (
+                    <div className="card-loading-state">
+                      <div className="loading-spinner" style={{ borderTopColor: '#60a5fa' }} />
+                      <p>Synthesizing strategic roadmap...</p>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         )}
       </main>
+
+      {/* ── Footer ─────────────────────────────────────────────────────────── */}
+      <footer className="app-footer">
+        <span>Product Council AI · Built for Hackathon</span>
+        <span className="footer-dot">·</span>
+        <span>Powered by Groq + Llama 3.3 70B</span>
+      </footer>
     </div>
   );
 }

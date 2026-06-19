@@ -6,6 +6,7 @@ export interface Node {
   confidence: number;
   dependsOn: string[];
   status: 'fresh' | 'stale' | 'contested';
+  previousConfidence?: number; // for tracking changes
 }
 
 export interface GraphData {
@@ -36,4 +37,14 @@ export interface RoadmapItem {
   rationale: string;
   relatedDebate: string[]; // references nodeId
   sourceNodes: string[]; // references nodeId
+}
+
+export interface ExecutiveSummary {
+  topRisk: string;
+  topOpportunity: string;
+  contestedDecision: string;
+  nextAction: string;
+  riskScore: number; // 0-10
+  opportunityScore: number; // 0-10
+  alignmentScore: number; // 0-100
 }

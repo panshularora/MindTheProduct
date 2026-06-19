@@ -27,59 +27,20 @@ export async function POST(request: Request) {
       );
     }
 
-    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
-    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
+    const groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
+    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
 
-    const prompt = `You are a product reasoning agent. Your task is to extract structured, atomic nodes representing the core claims, assumptions, requirements, and feedback signals from three provided text sources.
+    const prompt = `You are a product reasoning agent. Extract structured atomic nodes from the three input sources below.
 
 Input Sources:
-1. Product Requirement Document (PRD):
-[PRD_START]
-${prd}
-[PRD_END]
+1. PRD: ${prd}
+2. Feature Requests: ${featureRequests}
+3. User Feedback: ${feedback}
 
-2. Feature Requests:
-[FEATURE_REQUESTS_START]
-${featureRequests}
-[FEATURE_REQUESTS_END]
+Extract 8-20 atomic nodes. For each node classify type (claim/assumption/requirement/feedback_signal), source (prd/feature_request/feedback), confidence 0-1, and write a short plain-English text summary.
 
-3. User Feedback:
-[USER_FEEDBACK_START]
-${feedback}
-[USER_FEEDBACK_END]
-
-Task Instructions:
-- Extract between 8 and 20 atomic nodes total across all three sources.
-- Each node must capture a single, specific point. Do not combine multiple points into one node.
-- Classify each node's type into one of the following:
-  * 'claim': An assertion, goal, or expectation (typically from the PRD).
-  * 'assumption': A hypothesis about user behavior, needs, or capabilities (typically from the PRD).
-  * 'requirement': A specific functional or technical implementation item (typically from Feature Requests).
-  * 'feedback_signal': A report, quote, or metric representing direct user experience (typically from User Feedback).
-- Determine the node's source based on where it came from: 'prd', 'feature_request', or 'feedback'.
-- Assign a confidence score between 0.0 and 1.0 based on how explicitly the point was stated in the input (1.0 = explicitly stated verbatim; <1.0 = implied, summarized, or interpreted).
-- Write a short, plain-English "text" summary of the node. Do NOT copy verbatim quotes from the input; synthesize a concise, clear description.
-- Set "id" to a unique short slug like "n1", "n2", "n3", etc.
-- Leave "dependsOn" as an empty array: []
-- Set "status" to "fresh" for all nodes.
-
-Output Format:
-You must return ONLY a valid JSON object matching this exact shape:
-{
-  "nodes": [
-    {
-      "id": "n1",
-      "type": "claim",
-      "text": "Brief summary text",
-      "source": "prd",
-      "confidence": 0.9,
-      "dependsOn": [],
-      "status": "fresh"
-    }
-  ]
-}
-
-Do not include any surrounding conversational text, markdown code blocks, or preamble. Return ONLY the JSON object.`;
+Return ONLY valid JSON:
+{"nodes":[{"id":"n1","type":"claim","text":"summary","source":"prd","confidence":0.9,"dependsOn":[],"status":"fresh"}]}`;
 
     let text = '';
     let parsed: { nodes: Node[] } | null = null;
@@ -91,17 +52,18 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
       try {
         if (groq) {
           const completion = await groq.chat.completions.create({
-            model: 'llama3-70b-8192',
+            model: 'llama-3.3-70b-versatile',
             messages: [
               {
                 role: 'user',
                 content: attempts === 1
                   ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
               }
             ],
             temperature: 0,
-            response_format: { type: 'json_object' }
+            response_format: { type: 'json_object' },
+            max_tokens: 4000,
           });
           text = completion.choices[0]?.message?.content || '';
         } else if (anthropic) {
@@ -114,11 +76,10 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
                 role: 'user',
                 content: attempts === 1
                   ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
               }
             ]
           });
-
           const responseContent = message.content[0];
           if (responseContent.type !== 'text') {
             throw new Error('Anthropic API returned a non-text response.');
@@ -139,9 +100,9 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
         if (!parsed || !Array.isArray(parsed.nodes)) {
           throw new Error('Invalid JSON structure: missing nodes array.');
         }
-        break; // Parse and check succeeded! Exit loop.
+        break;
       } catch (parseError: unknown) {
-        console.warn(`Extraction API JSON parsing attempt ${attempts} failed.`, parseError);
+        console.warn(`Extraction API attempt ${attempts} failed.`, parseError);
         if (attempts >= maxAttempts) {
           const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
           throw new Error('LLM response was not valid JSON: ' + parseMsg);
@@ -150,10 +111,9 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
     }
 
     if (!parsed || !Array.isArray(parsed.nodes)) {
-      throw new Error('Failed to extract product nodes because of a malformed AI response.');
+      throw new Error('Failed to extract product nodes: malformed AI response.');
     }
 
-    // Validate nodes format just to be safe
     const validatedNodes: Node[] = parsed.nodes.map((node: Partial<Node>, idx: number) => {
       const type = (node.type && ['claim', 'assumption', 'requirement', 'feedback_signal'].includes(node.type))
         ? (node.type as 'claim' | 'assumption' | 'requirement' | 'feedback_signal')
@@ -176,7 +136,7 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
     return NextResponse.json({ nodes: validatedNodes });
   } catch (error: unknown) {
     console.error('Extraction API error:', error);
-    const errMsg = error instanceof Error ? error.message : 'An error occurred during extraction analysis.';
+    const errMsg = error instanceof Error ? error.message : 'An error occurred during extraction.';
     return NextResponse.json(
       { error: errMsg },
       { status: 500 }
