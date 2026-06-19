@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import Groq from 'groq-sdk';
 import { Node } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -16,18 +17,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
+    const groqKey = process.env.GROQ_API_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!groqKey && !anthropicKey) {
       return NextResponse.json(
-        { error: 'Anthropic API key is not configured on the server. Please check your env configuration.' },
+        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
         { status: 500 }
       );
     }
 
-    const anthropic = new Anthropic({
-      apiKey,
-      timeout: 25000, // 25 seconds timeout
-    });
+    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
+    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
 
     const prompt = `You are a product reasoning agent. Your task is to extract structured, atomic nodes representing the core claims, assumptions, requirements, and feedback signals from three provided text sources.
 
@@ -88,26 +89,44 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
     while (attempts < maxAttempts) {
       attempts++;
       try {
-        const message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
-          temperature: 0,
-          messages: [
-            {
-              role: 'user',
-              content: attempts === 1
-                ? prompt
-                : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
-            }
-          ]
-        });
+        if (groq) {
+          const completion = await groq.chat.completions.create({
+            model: 'llama3-70b-8192',
+            messages: [
+              {
+                role: 'user',
+                content: attempts === 1
+                  ? prompt
+                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+              }
+            ],
+            temperature: 0,
+            response_format: { type: 'json_object' }
+          });
+          text = completion.choices[0]?.message?.content || '';
+        } else if (anthropic) {
+          const message = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            temperature: 0,
+            messages: [
+              {
+                role: 'user',
+                content: attempts === 1
+                  ? prompt
+                  : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+              }
+            ]
+          });
 
-        const responseContent = message.content[0];
-        if (responseContent.type !== 'text') {
-          throw new Error('Anthropic API returned a non-text response.');
+          const responseContent = message.content[0];
+          if (responseContent.type !== 'text') {
+            throw new Error('Anthropic API returned a non-text response.');
+          }
+          text = responseContent.text;
         }
 
-        text = responseContent.text.trim();
+        text = text.trim();
 
         // Strip markdown code fences if present
         if (text.startsWith('```')) {
@@ -125,7 +144,7 @@ Do not include any surrounding conversational text, markdown code blocks, or pre
         console.warn(`Extraction API JSON parsing attempt ${attempts} failed.`, parseError);
         if (attempts >= maxAttempts) {
           const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
-          throw new Error('Claude response was not valid JSON: ' + parseMsg);
+          throw new Error('LLM response was not valid JSON: ' + parseMsg);
         }
       }
     }

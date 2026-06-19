@@ -1,9 +1,39 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import Groq from 'groq-sdk';
 import { DebateTurn } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+async function callLLM(
+  groq: Groq | null,
+  anthropic: Anthropic | null,
+  prompt: string,
+  temperature: number,
+  maxTokens: number
+): Promise<string> {
+  if (groq) {
+    const completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: prompt }],
+      temperature,
+      max_tokens: maxTokens,
+    });
+    return completion.choices[0]?.message?.content?.trim() || '';
+  } else if (anthropic) {
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: maxTokens,
+      temperature,
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const responseContent = message.content[0];
+    if (responseContent.type !== 'text') throw new Error('Anthropic returned non-text response.');
+    return responseContent.text.trim();
+  }
+  throw new Error('No LLM client available.');
+}
 
 export async function POST(request: Request) {
   const encoder = new TextEncoder();
@@ -19,27 +49,27 @@ export async function POST(request: Request) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
+    const groqKey = process.env.GROQ_API_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!groqKey && !anthropicKey) {
       return NextResponse.json(
-        { error: 'Anthropic API key is not configured.' },
+        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
         { status: 500 }
       );
     }
 
-    const anthropic = new Anthropic({
-      apiKey,
-      timeout: 25000, // 25 seconds timeout per call
-    });
+    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
+    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
 
     // Filter stale/contested nodes if not passed explicitly
     const targetNodes = (staleOrContestedNodes && staleOrContestedNodes.length > 0)
       ? staleOrContestedNodes
-      : allNodes.filter(n => n.status === 'stale' || n.status === 'contested');
+      : allNodes.filter((n: { status: string }) => n.status === 'stale' || n.status === 'contested');
 
     // Rank by lowest confidence, limit to top 5
     const debateTargets = [...targetNodes]
-      .sort((a, b) => (a.confidence || 0) - (b.confidence || 0))
+      .sort((a: { confidence?: number }, b: { confidence?: number }) => (a.confidence || 0) - (b.confidence || 0))
       .slice(0, 5);
 
     if (debateTargets.length === 0) {
@@ -60,7 +90,9 @@ export async function POST(request: Request) {
 
             // Create context description of all nodes
             const contextStr = allNodes
-              .map(n => `- [${n.id}] ${n.type} (${n.source}): "${n.text}" [Status: ${n.status}]`)
+              .map((n: { id: string; type: string; source: string; text: string; status: string }) =>
+                `- [${n.id}] ${n.type} (${n.source}): "${n.text}" [Status: ${n.status}]`
+              )
               .join('\n');
 
             // --- 1. GROWTH AGENT ---
@@ -80,14 +112,7 @@ Status: ${targetNode.status}
 
 Write your argument. Be concise (max 3-4 sentences).`;
 
-            const growthRes = await anthropic.messages.create({
-              model: 'claude-sonnet-4-6',
-              max_tokens: 500,
-              temperature: 0.7,
-              messages: [{ role: 'user', content: growthPrompt }]
-            });
-
-            const growthText = growthRes.content[0].type === 'text' ? growthRes.content[0].text.trim() : '';
+            const growthText = await callLLM(groq, anthropic, growthPrompt, 0.7, 500);
             const growthTurn: DebateTurn = {
               persona: 'growth',
               round: 1,
@@ -114,14 +139,7 @@ Growth Optimist's Argument:
 
 Write your rebuttal or engineering reality check. Be concise (max 3-4 sentences).`;
 
-            const engRes = await anthropic.messages.create({
-              model: 'claude-sonnet-4-6',
-              max_tokens: 500,
-              temperature: 0.5,
-              messages: [{ role: 'user', content: engPrompt }]
-            });
-
-            const engText = engRes.content[0].type === 'text' ? engRes.content[0].text.trim() : '';
+            const engText = await callLLM(groq, anthropic, engPrompt, 0.5, 500);
             const engTurn: DebateTurn = {
               persona: 'eng_realist',
               round: 1,
@@ -154,14 +172,7 @@ Engineering Realist's Argument:
 
 Write your commentary. Be concise (max 3-4 sentences). Finish your response with a line "Verdict: [Proceed/Modify/Cut] - [One-sentence rationale]".`;
 
-            const userRes = await anthropic.messages.create({
-              model: 'claude-sonnet-4-6',
-              max_tokens: 600,
-              temperature: 0.6,
-              messages: [{ role: 'user', content: userPrompt }]
-            });
-
-            const userTextFull = userRes.content[0].type === 'text' ? userRes.content[0].text.trim() : '';
+            const userTextFull = await callLLM(groq, anthropic, userPrompt, 0.6, 600);
             
             // Extract verdict and clean up text
             let verdictLine = 'Modify - Re-evaluate based on user needs.';

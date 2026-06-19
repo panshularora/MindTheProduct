@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import Groq from 'groq-sdk';
 import { RoadmapItem } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -16,18 +17,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
+    const groqKey = process.env.GROQ_API_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!groqKey && !anthropicKey) {
       return NextResponse.json(
-        { error: 'Anthropic API key is not configured.' },
+        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
         { status: 500 }
       );
     }
 
-    const anthropic = new Anthropic({
-      apiKey,
-      timeout: 25000, // 25 seconds timeout
-    });
+    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
+    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
 
     const prompt = `You are a principal product strategist. Your task is to synthesize the results of a 4-stage product alignment analysis to construct a ranked, prioritized product roadmap.
 
@@ -76,19 +77,31 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
     while (attempts < maxAttempts) {
       attempts++;
       try {
-        const message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
-          temperature: 0,
-          messages: [{ role: 'user', content: attempts === 1 ? prompt : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.` }]
-        });
+        const attemptPrompt = attempts === 1
+          ? prompt
+          : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`;
 
-        const responseContent = message.content[0];
-        if (responseContent.type !== 'text') {
-          throw new Error('Anthropic API returned a non-text response.');
+        if (groq) {
+          const completion = await groq.chat.completions.create({
+            model: 'llama-3.3-70b-versatile',
+            messages: [{ role: 'user', content: attemptPrompt }],
+            temperature: 0,
+            response_format: { type: 'json_object' },
+          });
+          text = completion.choices[0]?.message?.content?.trim() || '';
+        } else if (anthropic) {
+          const message = await anthropic.messages.create({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            temperature: 0,
+            messages: [{ role: 'user', content: attemptPrompt }],
+          });
+          const responseContent = message.content[0];
+          if (responseContent.type !== 'text') {
+            throw new Error('Anthropic API returned a non-text response.');
+          }
+          text = responseContent.text.trim();
         }
-
-        text = responseContent.text.trim();
 
         // Strip markdown code fences if present
         if (text.startsWith('```')) {
@@ -103,6 +116,15 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
           // Valid array structure
         } else if (parsed && typeof parsed === 'object' && 'roadmap' in parsed && Array.isArray((parsed as { roadmap: unknown }).roadmap)) {
           // Valid object containing roadmap array
+        } else if (parsed && typeof parsed === 'object') {
+          // Groq json_object mode might wrap the array in a key - find the first array value
+          const values = Object.values(parsed as Record<string, unknown>);
+          const firstArray = values.find(v => Array.isArray(v));
+          if (firstArray) {
+            parsed = firstArray;
+          } else {
+            throw new Error('Invalid JSON structure: expected a JSON array or an object containing a roadmap array.');
+          }
         } else {
           throw new Error('Invalid JSON structure: expected a JSON array or an object containing a roadmap array.');
         }
@@ -111,7 +133,7 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
         console.warn(`Synthesize API JSON parsing attempt ${attempts} failed.`, parseError);
         if (attempts >= maxAttempts) {
           const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
-          throw new Error('Claude response was not valid JSON: ' + parseMsg);
+          throw new Error('LLM response was not valid JSON: ' + parseMsg);
         }
       }
     }
