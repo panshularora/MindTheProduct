@@ -65,41 +65,13 @@ export default function Home() {
       });
       if (!extractRes.ok) throw new Error('Failed in Node Extraction phase');
       const extractData = await extractRes.json();
+      
+      // Log extraction quality to the console
+      console.log('Extraction Output:', extractData.nodes);
+      
       setNodes(extractData.nodes);
 
-      // Step 2: Graph
-      setActiveStep(2);
-      const graphRes = await fetch('/api/graph', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodes: extractData.nodes }),
-      });
-      if (!graphRes.ok) throw new Error('Failed in Graph Construction phase');
-      const graphData = await graphRes.json();
-      setGraph(graphData);
-
-      // Step 3: Debate
-      setActiveStep(3);
-      const debateRes = await fetch('/api/debate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: graphData }),
-      });
-      if (!debateRes.ok) throw new Error('Failed in Agent Debate phase');
-      const debateData = await debateRes.json();
-      setDebateLogs(debateData.debateLogs);
-
-      // Step 4: Synthesize
-      setActiveStep(4);
-      const synthRes = await fetch('/api/synthesize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ graph: graphData, debateLogs: debateData.debateLogs }),
-      });
-      if (!synthRes.ok) throw new Error('Failed in Roadmap Synthesis phase');
-      const synthData = await synthRes.json();
-      setRoadmap(synthData.roadmap);
-
+      // Do not run steps 2-4 yet as requested
       setActiveStep(5); // Finished
       setShowResults(true);
     } catch (err: unknown) {
