@@ -123,6 +123,20 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<'graph' | 'heatmap'>('graph');
   const [isJudgeMode, setIsJudgeMode] = useState(false);
 
+  const [proposedFixes, setProposedFixes] = useState<Record<string, string>>({});
+  const [rerunLogs, setRerunLogs] = useState<Record<string, DebateLog>>({});
+  const [isRerunning, setIsRerunning] = useState<Record<string, boolean>>({});
+  const [rerunThinkingAgent, setRerunThinkingAgent] = useState<{ nodeId: string; persona: keyof typeof PERSONA } | null>(null);
+  const [fixSuggestions, setFixSuggestions] = useState<Record<string, { text: string; addressesObjection: string }[]>>({});
+  const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState<Record<string, boolean>>({});
+
+  // GitHub Import States
+  const [repoUrl, setRepoUrl] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importedRepoName, setImportedRepoName] = useState<string | null>(null);
+  const [timelineInsight, setTimelineInsight] = useState('');
+
   const WALKTHROUGH_STEPS = [
     {
       title: "1. Conflicting Evidence",
@@ -175,6 +189,37 @@ export default function Home() {
     setFeatureRequests(JUDGE_FEATURES);
     setFeedback(JUDGE_FEEDBACK);
     setIsJudgeMode(true);
+  };
+
+  const handleGithubImport = async () => {
+    if (!repoUrl.trim()) return;
+    setIsImporting(true);
+    setImportError(null);
+    setImportedRepoName(null);
+    
+    try {
+      const res = await fetch('/api/github-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl })
+      });
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to import from GitHub');
+      }
+      
+      setPrd(data.prd || '');
+      setFeatureRequests(data.featureRequests || '');
+      setFeedback(data.feedback || '');
+      setImportedRepoName(data.repoName);
+      if (data.timelineInsight) setTimelineInsight(data.timelineInsight);
+      
+    } catch (err: unknown) {
+      setImportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   // Helper to highlight and scroll
@@ -377,15 +422,120 @@ export default function Home() {
     }
   };
 
+  const handleRerunDebate = async (nodeId: string, log: DebateLog) => {
+    const fix = proposedFixes[nodeId];
+    if (!fix || !fix.trim()) return;
+
+    setIsRerunning(prev => ({ ...prev, [nodeId]: true }));
+    const targetNode = nodes.find(n => n.id === nodeId);
+
+    try {
+      const r = await fetch('/api/debate-rerun', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetNode,
+          allNodes: nodes,
+          proposedFix: fix,
+          originalDebateLog: log
+        })
+      });
+
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || 'Debate rerun failed');
+      }
+
+      const reader = r.body?.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      
+      const currentRerunLog: DebateLog = { nodeId, turns: [], verdict: '' };
+      setRerunLogs(prev => ({ ...prev, [nodeId]: currentRerunLog }));
+
+      if (reader) {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const d = JSON.parse(line);
+              if (d.type === 'start_debate') {
+                // Already initialized
+              } else if (d.type === 'thinking') {
+                setRerunThinkingAgent({ nodeId: d.nodeId, persona: d.persona as keyof typeof PERSONA });
+              } else if (d.type === 'turn') {
+                setRerunThinkingAgent(null);
+                currentRerunLog.turns.push(d.turn);
+                setRerunLogs(prev => ({ ...prev, [nodeId]: { ...currentRerunLog } }));
+              } else if (d.type === 'verdict') {
+                currentRerunLog.verdict = d.verdict;
+                setRerunLogs(prev => ({ ...prev, [nodeId]: { ...currentRerunLog } }));
+              } else if (d.type === 'complete') {
+                setRerunThinkingAgent(null);
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch (err: unknown) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Unexpected challenge error');
+    } finally {
+      setIsRerunning(prev => ({ ...prev, [nodeId]: false }));
+      setRerunThinkingAgent(null);
+    }
+  };
+
+  const generateSuggestions = useCallback(async (log: DebateLog) => {
+    setIsGeneratingSuggestions(prev => ({ ...prev, [log.nodeId]: true }));
+    try {
+      const node = nodes.find(n => n.id === log.nodeId);
+      const res = await fetch('/api/suggest-fixes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node, debateLog: log })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.suggestions) {
+          setFixSuggestions(prev => ({ ...prev, [log.nodeId]: data.suggestions }));
+        }
+      }
+    } catch (err) {
+      console.error('Failed to generate suggestions', err);
+    } finally {
+      setIsGeneratingSuggestions(prev => ({ ...prev, [log.nodeId]: false }));
+    }
+  }, [nodes]);
+
+  useEffect(() => {
+    debateLogs.forEach(log => {
+      const isLive = thinkingAgent?.nodeId === log.nodeId;
+      const v = log.verdict;
+      if (!isLive && v && !v.toLowerCase().startsWith('proceed') && !fixSuggestions[log.nodeId] && !isGeneratingSuggestions[log.nodeId]) {
+        generateSuggestions(log);
+      }
+    });
+  }, [debateLogs, thinkingAgent, fixSuggestions, isGeneratingSuggestions, generateSuggestions]);
+
   const staleCount = nodes.filter(n => n.status === 'stale').length;
   const contestedCount = nodes.filter(n => n.status === 'contested').length;
   const freshCount = nodes.filter(n => n.status === 'fresh').length;
 
-  // Strategic Scores Calculations
-  const riskScore = nodes.length ? Math.min(10, Math.round(((staleCount + contestedCount) / nodes.length) * 10)) : 0;
-  const alignmentScore = nodes.length ? Math.round((freshCount / nodes.length) * 100) : 0;
-  
+  const isGraphDone = activeStep >= 2 && graph;
+  const isDebateDone = activeStep >= 4;
+
   const assumptions = nodes.filter(n => n.type === 'assumption');
+
+  // Strategic Scores Calculations
+  const riskScoreValue = isGraphDone && nodes.length ? Math.min(10, Math.round(((staleCount * 1.5 + contestedCount) / nodes.length) * 10)) : 0;
+  const alignmentScoreValue = isGraphDone && nodes.length ? Math.round((freshCount / nodes.length) * 100) : 0;
+  
   const getPostConfidence = (node: Node) => {
     const log = debateLogs.find(l => l.nodeId === node.id);
     if (!log || !log.verdict) return Math.round(node.confidence * 100);
@@ -394,13 +544,24 @@ export default function Home() {
     if (v.startsWith('cut')) return 10;
     return 45; // Modify
   };
-  const confidenceScore = assumptions.length
-    ? Math.round(assumptions.reduce((acc, curr) => acc + getPostConfidence(curr), 0) / assumptions.length)
-    : nodes.length ? Math.round((nodes.reduce((acc, curr) => acc + curr.confidence, 0) / nodes.length) * 100) : 0;
+  
+  const confidenceScoreValue = isDebateDone && nodes.length ? Math.round(nodes.reduce((acc, curr) => acc + getPostConfidence(curr), 0) / nodes.length) : 0;
 
-  const executionDifficulty = roadmap.length
-    ? Math.min(10, Math.round((roadmap.length * 1.3) + (contestedCount * 0.7)))
-    : 0;
+  const featureRequestsNodes = nodes.filter(n => n.source === 'feature_request');
+  const engCostKeywords = ['api', 'database', 'infrastructure', 'integration', 'migration', 'auth', 'security', 'backend', 'server', 'logic', 'handler'];
+  let totalEngScore = 0;
+  featureRequestsNodes.forEach(n => {
+    const text = n.text.toLowerCase();
+    const hits = engCostKeywords.filter(k => text.includes(k)).length;
+    totalEngScore += Math.min(10, hits * 2);
+  });
+  const avgEngCost = featureRequestsNodes.length ? totalEngScore / featureRequestsNodes.length : 0;
+  
+  const totalDebated = debateLogs.length;
+  const cutVerdicts = debateLogs.filter(l => l.verdict && l.verdict.toLowerCase().startsWith('cut')).length;
+  const cutRatio = totalDebated ? cutVerdicts / totalDebated : 0;
+  
+  const executionDifficultyValue = isDebateDone ? Math.min(10, Math.round((cutRatio * 5) + (avgEngCost / 2))) : 0;
 
   // Impact Radius details
   const getImpactDetails = (nodeId: string) => {
@@ -431,6 +592,30 @@ export default function Home() {
     { id: 'features-input', label: 'Feature Requests', placeholder: 'Paste backlog items, feature ideas, or technical specs...', value: featureRequests, setter: setFeatureRequests, color: '#fb923c' },
     { id: 'feedback-input', label: 'User Feedback & Signals', placeholder: 'Paste CSAT data, support tickets, customer interviews...', value: feedback, setter: setFeedback, color: '#a78bfa' },
   ];
+
+  const downloadRoadmapAsMarkdown = () => {
+    const date = new Date().toISOString().split('T')[0];
+    let md = `# Product Council AI — Roadmap Report\n\n`;
+    md += `Generated: ${new Date().toLocaleString()}\n\n`;
+    
+    [...roadmap].sort((a, b) => a.rank - b.rank).forEach(item => {
+      md += `## #${item.rank}. ${item.title}\n\n`;
+      md += `${item.rationale}\n\n`;
+      md += `**Trace sources:** ${item.sourceNodes.length ? item.sourceNodes.join(', ') : 'None'} | Debate: ${item.relatedDebate.length ? item.relatedDebate.join(', ') : 'None'}\n\n`;
+    });
+
+    md += `---\n*Generated by Product Council AI*`;
+
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `product-council-roadmap-${date}.md`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="pc-root">
@@ -524,6 +709,42 @@ export default function Home() {
               )}
             </div>
 
+            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: 16, marginBottom: 20, border: '1px solid rgba(255,255,255,0.08)' }}>
+              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#c9d1d9', marginBottom: 8 }}>
+                <Dot color="#a78bfa" /> Or paste a GitHub repo URL (Public)
+              </label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={repoUrl}
+                  onChange={e => setRepoUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo"
+                  style={{ flex: 1, minWidth: 200, background: 'rgba(5,8,16,0.6)', border: '1px solid rgba(255,255,255,0.1)', padding: '10px 14px', borderRadius: 8, color: '#f0f6fc', fontSize: '0.85rem' }}
+                />
+                <button
+                  onClick={handleGithubImport}
+                  disabled={isImporting || !repoUrl.trim()}
+                  style={{ background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', color: '#c4b5fd', padding: '0 16px', borderRadius: 8, fontSize: '0.8rem', fontWeight: 600, cursor: isImporting || !repoUrl.trim() ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, minHeight: 40 }}
+                >
+                  {isImporting ? <><Spinner color="#c4b5fd" size={14} /> Reading repo...</> : 'Generate from Repo'}
+                </button>
+              </div>
+              {importError && (
+                <div style={{ marginTop: 8, fontSize: '0.75rem', color: '#fca5a5' }}>
+                  {importError}
+                </div>
+              )}
+            </div>
+
+            {timelineInsight && (
+              <div className="pc-fade-in" style={{ background: 'rgba(52,211,153,0.06)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 700, color: '#34d399', marginBottom: 8 }}>
+                  📅 Timeline Insight
+                </div>
+                <p style={{ fontSize: '0.85rem', color: '#c9d1d9', lineHeight: 1.6 }}>{timelineInsight}</p>
+              </div>
+            )}
+
             <div className="pc-input-grid">
               {INPUT_FIELDS.map(({ id, label, placeholder, value, setter, color }) => (
                 <div key={id} className="pc-input-field">
@@ -544,6 +765,12 @@ export default function Home() {
                 </div>
               ))}
             </div>
+
+            {importedRepoName && (
+              <div style={{ marginTop: 12, textAlign: 'center', fontSize: '0.75rem', color: '#8b949e', fontStyle: 'italic' }}>
+                Generated from <strong>{importedRepoName}</strong> — edit before running if needed.
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
               <button className="pc-btn-run" id="run-analysis-btn" onClick={runAnalysis}
@@ -600,22 +827,30 @@ export default function Home() {
                 <div className="pc-score-grid">
                   <div className="pc-score-card">
                     <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f87171' }}>Risk Score</span>
-                    <span className="pc-score-value" style={{ color: riskScore >= 7 ? '#ef4444' : riskScore >= 4 ? '#fb923c' : '#34d399' }}>{riskScore}/10</span>
+                    <span className="pc-score-value" style={{ color: isGraphDone ? (riskScoreValue >= 7 ? '#ef4444' : riskScoreValue >= 4 ? '#fb923c' : '#34d399') : '#8b949e' }}>
+                      {isGraphDone ? `${riskScoreValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#f87171" size={14} /> Calc...</span>}
+                    </span>
                     <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Stale & Contested claims</span>
                   </div>
                   <div className="pc-score-card">
                     <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#34d399' }}>Alignment Score</span>
-                    <span className="pc-score-value" style={{ color: alignmentScore >= 70 ? '#34d399' : alignmentScore >= 40 ? '#fb923c' : '#ef4444' }}>{alignmentScore}%</span>
+                    <span className="pc-score-value" style={{ color: isGraphDone ? (alignmentScoreValue >= 70 ? '#34d399' : alignmentScoreValue >= 40 ? '#fb923c' : '#ef4444') : '#8b949e' }}>
+                      {isGraphDone ? `${alignmentScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#34d399" size={14} /> Calc...</span>}
+                    </span>
                     <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Fresh validated ideas</span>
                   </div>
                   <div className="pc-score-card">
                     <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#a78bfa' }}>Confidence Score</span>
-                    <span className="pc-score-value" style={{ color: confidenceScore >= 70 ? '#34d399' : confidenceScore >= 40 ? '#fb923c' : '#ef4444' }}>{confidenceScore}%</span>
+                    <span className="pc-score-value" style={{ color: isDebateDone ? (confidenceScoreValue >= 70 ? '#34d399' : confidenceScoreValue >= 40 ? '#fb923c' : '#ef4444') : '#8b949e' }}>
+                      {isDebateDone ? `${confidenceScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#a78bfa" size={14} /> Calc...</span>}
+                    </span>
                     <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Assumption health rating</span>
                   </div>
                   <div className="pc-score-card">
                     <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#60a5fa' }}>Difficulty Index</span>
-                    <span className="pc-score-value" style={{ color: executionDifficulty >= 7 ? '#ef4444' : executionDifficulty >= 4 ? '#fb923c' : '#34d399' }}>{executionDifficulty}/10</span>
+                    <span className="pc-score-value" style={{ color: isDebateDone ? (executionDifficultyValue >= 7 ? '#ef4444' : executionDifficultyValue >= 4 ? '#fb923c' : '#34d399') : '#8b949e' }}>
+                      {isDebateDone ? `${executionDifficultyValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#60a5fa" size={14} /> Calc...</span>}
+                    </span>
                     <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Eng complexity weight</span>
                   </div>
                 </div>
@@ -912,6 +1147,150 @@ export default function Home() {
                                   <p style={{ fontSize: '0.85rem', fontWeight: 700, color: vs.color }}>{log.verdict}</p>
                                 </div>
                               )}
+
+                              {/* Propose a fix input */}
+                              {log.verdict && !log.verdict.toLowerCase().startsWith('proceed') && (
+                                <div style={{ marginTop: 8, padding: 12, borderRadius: 12, background: 'rgba(255,255,255,0.03)', border: '1px dashed rgba(255,255,255,0.15)' }}>
+                                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#c9d1d9', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    ✨ AI Suggested Fixes
+                                  </div>
+                                  
+                                  {isGeneratingSuggestions[log.nodeId] && (
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                                      <div style={{ height: 28, width: 200, background: 'rgba(255,255,255,0.05)', borderRadius: 14, animation: 'pcPulse 1.5s infinite' }} />
+                                      <div style={{ height: 28, width: 160, background: 'rgba(255,255,255,0.05)', borderRadius: 14, animation: 'pcPulse 1.5s infinite' }} />
+                                    </div>
+                                  )}
+
+                                  {!isGeneratingSuggestions[log.nodeId] && fixSuggestions[log.nodeId] && (
+                                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                                      {fixSuggestions[log.nodeId].map((sug, idx) => (
+                                        <button
+                                          key={idx}
+                                          onClick={() => {
+                                            setProposedFixes(prev => ({ ...prev, [log.nodeId]: sug.text }));
+                                            setTimeout(() => handleRerunDebate(log.nodeId, log), 0);
+                                          }}
+                                          title={`Addresses: ${sug.addressesObjection}`}
+                                          style={{
+                                            background: 'rgba(167,139,250,0.1)',
+                                            border: '1px solid rgba(167,139,250,0.3)',
+                                            color: '#c4b5fd',
+                                            padding: '4px 10px',
+                                            borderRadius: 14,
+                                            fontSize: '0.68rem',
+                                            fontWeight: 600,
+                                            cursor: 'pointer',
+                                            textAlign: 'left',
+                                            transition: 'all 0.2s'
+                                          }}
+                                        >
+                                          <span style={{ opacity: 0.7, marginRight: 4 }}>💡</span>
+                                          {sug.text}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#c9d1d9', marginBottom: 8, marginTop: fixSuggestions[log.nodeId] ? 12 : 0, borderTop: fixSuggestions[log.nodeId] ? '1px solid rgba(255,255,255,0.06)' : 'none', paddingTop: fixSuggestions[log.nodeId] ? 12 : 0 }}>Or write a manual fix:</div>
+                                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                    <input 
+                                      value={proposedFixes[log.nodeId] || ''} 
+                                      onChange={e => setProposedFixes(prev => ({ ...prev, [log.nodeId]: e.target.value }))}
+                                      placeholder="e.g. add a mandatory human-handoff button..."
+                                      style={{ flex: 1, minWidth: 200, background: 'rgba(5,8,16,0.6)', border: '1px solid rgba(255,255,255,0.1)', padding: '8px 12px', borderRadius: 8, color: '#f0f6fc', fontSize: '0.8rem' }}
+                                    />
+                                    <button 
+                                      onClick={() => handleRerunDebate(log.nodeId, log)}
+                                      disabled={isRerunning[log.nodeId] || !proposedFixes[log.nodeId]}
+                                      style={{ background: 'rgba(96,165,250,0.15)', border: '1px solid rgba(96,165,250,0.3)', color: '#93c5fd', padding: '0 16px', borderRadius: 8, fontSize: '0.75rem', fontWeight: 600, cursor: isRerunning[log.nodeId] || !proposedFixes[log.nodeId] ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, minHeight: 36 }}
+                                    >
+                                      {isRerunning[log.nodeId] ? <><Spinner color="#93c5fd" size={14} /> Re-running...</> : 'Re-run Debate'}
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Round 2 Rerun */}
+                          {rerunLogs[log.nodeId] && (
+                            <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 16, marginTop: 8, paddingLeft: 14, paddingRight: 14, paddingBottom: 14 }}>
+                              <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#93c5fd', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span>🔄 Round 2 (with fix applied)</span>
+                                <span style={{ fontSize: '0.65rem', fontWeight: 600, background: 'rgba(255,255,255,0.08)', padding: '2px 8px', borderRadius: 12, color: '#c9d1d9' }}>Simulation</span>
+                              </div>
+                              
+                              {/* Before / After comparison */}
+                              {rerunLogs[log.nodeId].verdict && (
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, background: 'rgba(5,8,16,0.4)', padding: 12, borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', color: '#8b949e', marginBottom: 4 }}>Original Verdict</div>
+                                    <Badge style={vs}>{log.verdict.split(' - ')[0]}</Badge>
+                                  </div>
+                                  <div style={{ color: '#8b949e', fontWeight: 800 }}>➔</div>
+                                  <div style={{ flex: 1 }}>
+                                    <div style={{ fontSize: '0.6rem', textTransform: 'uppercase', color: '#8b949e', marginBottom: 4 }}>New Verdict</div>
+                                    {(() => {
+                                      const newV = rerunLogs[log.nodeId].verdict;
+                                      const newVKey = newV.toLowerCase().startsWith('proceed') ? 'proceed' : newV.toLowerCase().startsWith('cut') ? 'cut' : 'modify';
+                                      const newVs = VERDICT_STYLE[newVKey];
+                                      return <Badge style={newVs}>{newV.split(' - ')[0]}</Badge>;
+                                    })()}
+                                  </div>
+                                </div>
+                              )}
+
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {rerunLogs[log.nodeId].turns.map((turn, i) => {
+                                  const p = PERSONA[turn.persona];
+                                  return (
+                                    <div key={i} className="pc-fade-in" style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}`, display: 'flex', gap: 10 }}>
+                                      <div className="pc-chat-avatar" style={{ background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}35` }}>
+                                        {p.emoji}
+                                      </div>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                        <div className="pc-chat-title-group">
+                                          <span style={{ fontSize: '0.72rem', fontWeight: 800, color: p.color }}>{p.name} <span className="pc-chat-role">({p.title})</span></span>
+                                          {turn.respondingTo && <span style={{ fontWeight: 400, color: '#484f58', fontSize: '0.65rem' }}>↩ responding to {PERSONA[turn.respondingTo as keyof typeof PERSONA]?.name}</span>}
+                                        </div>
+                                        <p style={{ fontSize: '0.8rem', color: '#c9d1d9', lineHeight: 1.6 }}>{turn.text}</p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                {/* Typing indicator for rerun */}
+                                {rerunThinkingAgent?.nodeId === log.nodeId && (() => {
+                                  const p = PERSONA[rerunThinkingAgent.persona];
+                                  return (
+                                    <div style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}`, display: 'flex', gap: 10 }}>
+                                      <div className="pc-chat-avatar" style={{ background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}35` }}>{p.emoji}</div>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                                        <span style={{ fontSize: '0.72rem', fontWeight: 800, color: p.color }}>{p.name} <span className="pc-chat-role">({p.title}) is typing...</span></span>
+                                        <div style={{ display: 'flex', gap: 5, padding: '4px 0' }}>
+                                          <span className="pc-dot pc-dot-1" style={{ background: p.color }} />
+                                          <span className="pc-dot pc-dot-2" style={{ background: p.color }} />
+                                          <span className="pc-dot pc-dot-3" style={{ background: p.color }} />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
+
+                                {/* Verdict panel for rerun */}
+                                {rerunLogs[log.nodeId].verdict && (() => {
+                                  const newV = rerunLogs[log.nodeId].verdict;
+                                  const newVKey = newV.toLowerCase().startsWith('proceed') ? 'proceed' : newV.toLowerCase().startsWith('cut') ? 'cut' : 'modify';
+                                  const newVs = VERDICT_STYLE[newVKey];
+                                  return (
+                                    <div style={{ borderRadius: 12, padding: 12, background: newVs.bg, border: `1px solid ${newVs.border}` }}>
+                                      <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: newVs.color, marginBottom: 6 }}>👤 User Advocate Verdict</div>
+                                      <p style={{ fontSize: '0.85rem', fontWeight: 700, color: newVs.color }}>{newV}</p>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                             </div>
                           )}
                         </div>
@@ -977,10 +1356,33 @@ export default function Home() {
               {/* Stage 04 Roadmap */}
               {(roadmap.length > 0 || activeStep === 4) && (
                 <div id="roadmap-section">
-                  <div className="pc-stage-label">
-                    <span className="pc-stage-num">04</span>
-                    <span className="pc-stage-name">Synthesized & Ranked Product Roadmap</span>
-                    {loading && activeStep === 4 && <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.3)', color: '#60a5fa' }} className="pc-blink">● SYNTHESIZING</span>}
+                  <div className="pc-stage-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <div>
+                      <span className="pc-stage-num">04</span>
+                      <span className="pc-stage-name">Synthesized & Ranked Product Roadmap</span>
+                      {loading && activeStep === 4 && <span style={{ fontSize: '0.65rem', fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: 'rgba(96,165,250,0.08)', border: '1px solid rgba(96,165,250,0.3)', color: '#60a5fa', marginLeft: 12 }} className="pc-blink">● SYNTHESIZING</span>}
+                    </div>
+                    {roadmap.length > 0 && (
+                      <button 
+                        onClick={downloadRoadmapAsMarkdown}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          padding: '6px 12px',
+                          borderRadius: 8,
+                          background: 'rgba(45,212,191,0.1)',
+                          border: '1px solid rgba(45,212,191,0.25)',
+                          color: '#2dd4bf',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s'
+                        }}
+                      >
+                        ⬇ Export Roadmap
+                      </button>
+                    )}
                   </div>
                   <div className="pc-card">
                     {roadmap.length > 0 ? (
@@ -1122,9 +1524,9 @@ export default function Home() {
       </main>
 
       <footer className="pc-footer">
-        <span>Product Council AI · Built for Hackathon</span>
+        <span>Product Council AI · Decision Intelligence System</span>
         <span style={{ color: 'rgba(255,255,255,0.1)' }}>·</span>
-        <span>Powered by Groq + Llama 3.3 70B</span>
+        <span>Powered by Groq + Gemini + Anthropic Fallbacks</span>
       </footer>
     </div>
   );

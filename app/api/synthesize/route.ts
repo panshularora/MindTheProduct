@@ -37,8 +37,13 @@ Task Instructions:
   * Assign a unique ID like "r1", "r2", etc.
   * Provide a clear title.
   * Write a detailed "rationale" explaining why it has this rank. The rationale must explicitly cite which debate verdicts and source feedback nodes influenced this decision.
+  * IMPORTANT: Vary sentence structure across items. Do not repeat the same template phrase across multiple roadmap items. Each rationale should read as if reasoned independently, citing a DIFFERENT specific debate moment or specific feedback node text.
   * Populate "relatedDebate" with an array of node IDs that had active debates related to this item.
   * Populate "sourceNodes" with an array of node IDs (e.g. feedback signals, requirements, or claims) that support or inform this item.
+
+Few-Shot Example of Rationale Variation:
+Example Item 1: "Driven by feedback n4 pointing to revenue loss, this feature takes priority. The engineering realist argued the backend integration is trivial (verdict: proceed), allowing us to capture value quickly."
+Example Item 2: "We've deprioritized this initiative after the User Advocate highlighted severe usability risks in n12. Although Growth pushed for shipping fast, the final verdict was to cut the auto-resolve flow to protect CSAT."
 
 Output Format:
 Return ONLY a valid JSON array matching this exact shape:

@@ -58,29 +58,32 @@ export async function callLLMUnified({
   const groqKey = getApiKey('GROQ_API_KEY');
   const anthropicKey = getApiKey('ANTHROPIC_API_KEY');
 
-  // 1. Try Groq first (unless it is known to have been restricted/rate-limited)
+  // 1. Try Groq first with multi-model fallback list (handles TPD/RPM rate limits on a per-model basis)
   if (groqKey && !groqKey.includes('your_groq_key_here')) {
-    try {
-      const groq = new Groq({ apiKey: groqKey });
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompt }],
-        temperature,
-        max_tokens: maxTokens,
-        ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
-      });
-      const res = completion.choices[0]?.message?.content;
-      if (res) return res.trim();
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn('Groq LLM call failed, trying fallback. Error message:', errMsg);
+    const groqModels = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'];
+    for (const model of groqModels) {
+      try {
+        const groq = new Groq({ apiKey: groqKey });
+        const completion = await groq.chat.completions.create({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature,
+          max_tokens: maxTokens,
+          ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
+        });
+        const res = completion.choices[0]?.message?.content;
+        if (res) return res.trim();
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`Groq model ${model} call failed, trying next. Error message:`, errMsg);
+      }
     }
   }
 
   // 2. Try Gemini Flash models as fallback (since we have a verified valid GEMINI_API_KEY in the OS environment!)
   const geminiKey = getApiKey('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
   if (geminiKey && !geminiKey.includes('your_gemini_key_here')) {
-    const geminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite'];
+    const geminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
     for (const model of geminiModels) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`, {
