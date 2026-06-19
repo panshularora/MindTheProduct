@@ -1,22 +1,9 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
-import Script from "next/script";
 import "./globals.css";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
-});
-const geistMono = localFont({
-  src: "./fonts/GeistMonoVF.woff",
-  variable: "--font-geist-mono",
-  weight: "100 900",
-});
-
 export const metadata: Metadata = {
-  title: "Product Council AI",
-  description: "AI-Powered Decision Pipeline for Product Alignment",
+  title: "Product Council AI · AI Executive Boardroom",
+  description: "4-Stage AI Alignment Engine: Resolve PRD contradictions, debate tradeoffs, and synthesize a verified product roadmap.",
 };
 
 export default function RootLayout({
@@ -25,29 +12,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+    <html lang="en" style={{ background: '#050810' }}>
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+      </head>
+      <body style={{ background: '#050810', margin: 0, padding: 0 }}>
         {children}
-        
-        {/* Novus.ai Tracking Snippet */}
-        <Script
-          id="novus-tracker"
-          strategy="afterInteractive"
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function(n,o,v,u,s){
-                n[u]=n[u]||function(){(n[u].q=n[u].q||[]).push(arguments)};
-                s=o.createElement(v);s.async=1;s.src="https://cdn.novus.ai/tracker.js";
-                var a=o.getElementsByTagName(v)[0];a.parentNode.insertBefore(s,a);
-              })(window,document,"script","novus");
-              // Initialize tracking. If you have an account or write-key, replace 'YOUR_WRITE_KEY' below:
-              novus("init", "YOUR_WRITE_KEY");
-              novus("track", "pageview");
-            `,
-          }}
-        />
       </body>
     </html>
   );
