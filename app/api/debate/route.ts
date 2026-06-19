@@ -1,46 +1,16 @@
 import { NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
-import Groq from 'groq-sdk';
 import { DebateTurn } from '@/lib/types';
+import { getApiKey, callLLMUnified } from '@/lib/api-keys';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-async function callLLM(
-  groq: Groq | null,
-  anthropic: Anthropic | null,
-  prompt: string,
-  temperature: number,
-  maxTokens: number
-): Promise<string> {
-  if (groq) {
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [{ role: 'user', content: prompt }],
-      temperature,
-      max_tokens: maxTokens,
-    });
-    return completion.choices[0]?.message?.content?.trim() || '';
-  } else if (anthropic) {
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: maxTokens,
-      temperature,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const responseContent = message.content[0];
-    if (responseContent.type !== 'text') throw new Error('Anthropic returned non-text response.');
-    return responseContent.text.trim();
-  }
-  throw new Error('No LLM client available.');
-}
 
 export async function POST(request: Request) {
   const encoder = new TextEncoder();
 
   try {
     const body = await request.json();
-    const { staleOrContestedNodes, allNodes } = body;
+    const { staleOrContestedNodes, allNodes, isChallenge } = body;
 
     if (!allNodes || !Array.isArray(allNodes)) {
       return NextResponse.json(
@@ -49,31 +19,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const groqKey = process.env.GROQ_API_KEY;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    const groqKey = getApiKey('GROQ_API_KEY');
+    const anthropicKey = getApiKey('ANTHROPIC_API_KEY');
+    const geminiKey = getApiKey('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
 
-    if (!groqKey && !anthropicKey) {
+    if (!groqKey && !anthropicKey && !geminiKey) {
       return NextResponse.json(
-        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
+        { error: 'Server API key is not configured. Please set GROQ_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in the Vercel dashboard.' },
         { status: 500 }
       );
     }
-
-    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
-    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
 
     // Filter stale/contested nodes if not passed explicitly
     const targetNodes = (staleOrContestedNodes && staleOrContestedNodes.length > 0)
       ? staleOrContestedNodes
       : allNodes.filter((n: { status: string }) => n.status === 'stale' || n.status === 'contested');
 
-    // Rank by lowest confidence, limit to top 5
+    // Rank by lowest confidence, limit to top 5 (unless it is a specific challenge node, in which case we only debate that)
     const debateTargets = [...targetNodes]
       .sort((a: { confidence?: number }, b: { confidence?: number }) => (a.confidence || 0) - (b.confidence || 0))
       .slice(0, 5);
 
     if (debateTargets.length === 0) {
-      // Return empty if no nodes to debate
       return NextResponse.json({ debateLogs: [] });
     }
 
@@ -97,22 +64,23 @@ export async function POST(request: Request) {
 
             // --- 1. GROWTH AGENT ---
             sendChunk({ type: 'thinking', nodeId: targetNode.id, persona: 'growth' });
-            const growthPrompt = `You are the GROWTH OPTIMIST, a product manager laser-focused on user acquisition, engagement, product virality, and shipping fast. 
-Your goal is to argue strongly for proceeding with this node. Make a concrete, aggressive, growth-oriented argument. Do not be generic.
+            const growthPrompt = `You are the GROWTH OPTIMIST, a product manager focused on rapid growth and shipping fast.
+Your goal is to write a short, aggressive statement arguing to proceed with this node. Start with a direct assertion.
+${isChallenge ? 'Since this is a CHALLENGE DEBATE, address risks but still advocate for a lean, phased growth approach.' : ''}
 
 Context of all extracted product nodes:
 ${contextStr}
 
-The node under debate:
-ID: ${targetNode.id}
-Type: ${targetNode.type}
-Source: ${targetNode.source}
-Text: ${targetNode.text}
-Status: ${targetNode.status}
+Node under debate:
+[${targetNode.id}] ${targetNode.text}
 
-Write your argument. Be concise (max 3-4 sentences).`;
+Write your argument. Be extremely concise (max 2 sentences). Format: "Ship it because [core reason]. [supporting point]."`;
 
-            const growthText = await callLLM(groq, anthropic, growthPrompt, 0.7, 500);
+            const growthText = await callLLMUnified({
+              prompt: growthPrompt,
+              temperature: 0.7,
+              maxTokens: 150
+            });
             const growthTurn: DebateTurn = {
               persona: 'growth',
               round: 1,
@@ -123,23 +91,27 @@ Write your argument. Be concise (max 3-4 sentences).`;
 
             // --- 2. ENG REALIST AGENT ---
             sendChunk({ type: 'thinking', nodeId: targetNode.id, persona: 'eng_realist' });
-            const engPrompt = `You are the ENG REALIST, a pragmatic principal engineer focused on tech stack stability, code maintainability, engineering cost, implementation risks, scalability, and technical debt.
-Your goal is to analyze the node under debate and directly respond to the Growth Optimist's argument.
-You MUST quote or reference at least one specific point the Growth Optimist made, and rebut or build on it from an engineering feasibility, cost, or maintainability standpoint. Do not just state your independent opinion.
+            const engPrompt = `You are the ENG REALIST, a pragmatic principal engineer focused on stability, maintainability, and engineering risk.
+Your goal is to write a direct engineering rebuttal to the Growth Optimist's argument.
+Start with "Disagree. [reason]" or "Agree, but [concern]". Directly reference their point.
+${isChallenge ? 'Since this is a CHALLENGE DEBATE, play Devil\'s Advocate and highlight hidden architectural risks or technical debt.' : ''}
 
 Context of all extracted product nodes:
 ${contextStr}
 
-The node under debate:
-ID: ${targetNode.id}
-Text: ${targetNode.text}
+Node under debate:
+[${targetNode.id}] ${targetNode.text}
 
 Growth Optimist's Argument:
 "${growthText}"
 
-Write your rebuttal or engineering reality check. Be concise (max 3-4 sentences).`;
+Write your rebuttal. Be extremely concise (max 2 sentences).`;
 
-            const engText = await callLLM(groq, anthropic, engPrompt, 0.5, 500);
+            const engText = await callLLMUnified({
+              prompt: engPrompt,
+              temperature: 0.5,
+              maxTokens: 150
+            });
             const engTurn: DebateTurn = {
               persona: 'eng_realist',
               round: 1,
@@ -150,19 +122,16 @@ Write your rebuttal or engineering reality check. Be concise (max 3-4 sentences)
 
             // --- 3. USER ADVOCATE AGENT ---
             sendChunk({ type: 'thinking', nodeId: targetNode.id, persona: 'user_advocate' });
-            const userPrompt = `You are the USER ADVOCATE, a product designer and researcher championing usability, customer delight, and actual end-user feedback.
-Your goal is to review the node under debate, weigh both the Growth Optimist's and Eng Realist's arguments, reference specific points they made, and deliver a final alignment verdict:
-- Proceed (build as planned)
-- Modify (adjust scope or direction to balance user/eng needs)
-- Cut (do not build)
-Provide a final verdict, then write your commentary. Weigh the arguments against user feedback signals.
+            const userPrompt = `You are the USER ADVOCATE, championing usability and customer delight.
+Your goal is to review the node, weigh both arguments, and deliver a final alignment verdict: Proceed, Modify, or Cut.
+Start with "[Growth/Engineering] is correct because [reason]."
+${isChallenge ? 'Since this is a CHALLENGE DEBATE, be highly critical. If risks outweigh benefits, lean towards Modify or Cut.' : ''}
 
 Context of all extracted product nodes:
 ${contextStr}
 
-The node under debate:
-ID: ${targetNode.id}
-Text: ${targetNode.text}
+Node under debate:
+[${targetNode.id}] ${targetNode.text}
 
 Growth Optimist's Argument:
 "${growthText}"
@@ -170,9 +139,14 @@ Growth Optimist's Argument:
 Engineering Realist's Argument:
 "${engText}"
 
-Write your commentary. Be concise (max 3-4 sentences). Finish your response with a line "Verdict: [Proceed/Modify/Cut] - [One-sentence rationale]".`;
+Write your commentary. Be extremely concise (max 2 sentences).
+Finish your response with a line: "Verdict: [Proceed/Modify/Cut] - [One-sentence rationale]"`;
 
-            const userTextFull = await callLLM(groq, anthropic, userPrompt, 0.6, 600);
+            const userTextFull = await callLLMUnified({
+              prompt: userPrompt,
+              temperature: 0.6,
+              maxTokens: 200
+            });
             
             // Extract verdict and clean up text
             let verdictLine = 'Modify - Re-evaluate based on user needs.';

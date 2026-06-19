@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
-import Groq from 'groq-sdk';
 import { Node, GraphData } from '@/lib/types';
+import { callLLMUnified, cleanAndParseJSON } from '@/lib/api-keys';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,19 +15,6 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-
-    const groqKey = process.env.GROQ_API_KEY;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-
-    if (!groqKey && !anthropicKey) {
-      return NextResponse.json(
-        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
-        { status: 500 }
-      );
-    }
-
-    const groq = groqKey ? new Groq({ apiKey: groqKey }) : null;
-    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey }) : null;
 
     const prompt = `You are a product reasoning agent. Analyze these product nodes holistically.
 
@@ -50,52 +36,20 @@ Return ONLY valid JSON:
     while (attempts < maxAttempts) {
       attempts++;
       try {
-        if (groq) {
-          const completion = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [
-              {
-                role: 'user',
-                content: attempts === 1
-                  ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
-              }
-            ],
-            temperature: 0,
-            response_format: { type: 'json_object' },
-            max_tokens: 4000,
-          });
-          text = completion.choices[0]?.message?.content || '';
-        } else if (anthropic) {
-          const message = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 4000,
-            temperature: 0,
-            messages: [
-              {
-                role: 'user',
-                content: attempts === 1
-                  ? prompt
-                  : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`
-              }
-            ]
-          });
-          const responseContent = message.content[0];
-          if (responseContent.type !== 'text') {
-            throw new Error('Anthropic API returned a non-text response.');
-          }
-          text = responseContent.text;
-        }
+        const attemptPrompt = attempts === 1
+          ? prompt
+          : `${prompt}\n\nIMPORTANT: Your previous response was not valid JSON. Return ONLY the JSON object, no markdown, no text.`;
+        
+        text = await callLLMUnified({
+          prompt: attemptPrompt,
+          jsonMode: true,
+          temperature: 0,
+          maxTokens: 4000
+        });
 
         text = text.trim();
 
-        if (text.startsWith('```')) {
-          text = text.replace(/^```[a-zA-Z]*\n?/, '');
-          text = text.replace(/\n?```$/, '');
-          text = text.trim();
-        }
-
-        parsed = JSON.parse(text);
+        parsed = cleanAndParseJSON(text);
         if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
           throw new Error('Invalid JSON structure: missing nodes or edges array.');
         }

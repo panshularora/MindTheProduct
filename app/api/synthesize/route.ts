@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
-import Groq from 'groq-sdk';
 import { RoadmapItem } from '@/lib/types';
+import { callLLMUnified, cleanAndParseJSON } from '@/lib/api-keys';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,19 +15,6 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-
-    const groqKey = process.env.GROQ_API_KEY;
-    const anthropicKey = process.env.ANTHROPIC_API_KEY;
-
-    if (!groqKey && !anthropicKey) {
-      return NextResponse.json(
-        { error: 'Server API key is not configured. Please set GROQ_API_KEY or ANTHROPIC_API_KEY in the Vercel dashboard.' },
-        { status: 500 }
-      );
-    }
-
-    const groq = groqKey ? new Groq({ apiKey: groqKey, timeout: 25000 }) : null;
-    const anthropic = anthropicKey ? new Anthropic({ apiKey: anthropicKey, timeout: 25000 }) : null;
 
     const prompt = `You are a principal product strategist. Your task is to synthesize the results of a 4-stage product alignment analysis to construct a ranked, prioritized product roadmap.
 
@@ -81,36 +67,16 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
           ? prompt
           : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`;
 
-        if (groq) {
-          const completion = await groq.chat.completions.create({
-            model: 'llama-3.3-70b-versatile',
-            messages: [{ role: 'user', content: attemptPrompt }],
-            temperature: 0,
-            response_format: { type: 'json_object' },
-          });
-          text = completion.choices[0]?.message?.content?.trim() || '';
-        } else if (anthropic) {
-          const message = await anthropic.messages.create({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 4000,
-            temperature: 0,
-            messages: [{ role: 'user', content: attemptPrompt }],
-          });
-          const responseContent = message.content[0];
-          if (responseContent.type !== 'text') {
-            throw new Error('Anthropic API returned a non-text response.');
-          }
-          text = responseContent.text.trim();
-        }
+        text = await callLLMUnified({
+          prompt: attemptPrompt,
+          jsonMode: true,
+          temperature: 0,
+          maxTokens: 4000
+        });
 
-        // Strip markdown code fences if present
-        if (text.startsWith('```')) {
-          text = text.replace(/^```[a-zA-Z]*\n?/, '');
-          text = text.replace(/\n?```$/, '');
-          text = text.trim();
-        }
+        text = text.trim();
 
-        parsed = JSON.parse(text);
+        parsed = cleanAndParseJSON(text);
         
         if (Array.isArray(parsed)) {
           // Valid array structure

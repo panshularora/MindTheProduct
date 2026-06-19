@@ -241,6 +241,158 @@ const CSS = `
 
   /* Card header */
   .pc-card-header { display: flex; align-items: center; gap: 8px; padding: 16px 20px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 0.82rem; font-weight: 700; color: #f0f6fc; }
+
+  /* Upgraded UI Styles */
+  .pc-highlight-flash {
+    animation: flashHighlight 2s ease;
+  }
+  @keyframes flashHighlight {
+    0%, 100% { border-color: rgba(45,212,191,0.3); background-color: rgba(45,212,191,0.06); }
+    30% { border-color: #2dd4bf; background-color: rgba(45,212,191,0.25); box-shadow: 0 0 15px rgba(45,212,191,0.4); }
+  }
+
+  .pc-score-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  @media (max-width: 768px) { .pc-score-grid { grid-template-columns: 1fr 1fr; } }
+
+  .pc-score-card {
+    background: rgba(13,17,23,0.6);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px;
+    padding: 16px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .pc-score-value {
+    font-size: 1.6rem;
+    font-weight: 900;
+    font-family: 'JetBrains Mono', monospace;
+    line-height: 1;
+  }
+
+  /* Chat avatars and titles */
+  .pc-chat-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    flex-shrink: 0;
+  }
+
+  .pc-chat-title-group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pc-chat-role {
+    font-size: 0.62rem;
+    color: #8b949e;
+    font-weight: 500;
+  }
+
+  /* Decision impact highlights */
+  .pc-node-impacted {
+    box-shadow: 0 0 10px rgba(167,139,250,0.15);
+    border-color: rgba(167,139,250,0.4) !important;
+  }
+
+  .pc-debate-impacted {
+    border-color: rgba(167,139,250,0.4) !important;
+    background: rgba(167,139,250,0.03) !important;
+  }
+
+  .pc-roadmap-impacted {
+    border-color: rgba(167,139,250,0.4) !important;
+    box-shadow: 0 0 12px rgba(167,139,250,0.1) !important;
+  }
+
+  /* Walkthrough guide panel */
+  .pc-walkthrough-card {
+    background: linear-gradient(135deg, rgba(167,139,250,0.06), rgba(96,165,250,0.06));
+    border: 1px solid rgba(167,139,250,0.25);
+    border-radius: 16px;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .pc-walkthrough-steps {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .pc-walkthrough-step-btn {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #8b949e;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .pc-walkthrough-step-btn-active {
+    background: rgba(167,139,250,0.18);
+    border-color: rgba(167,139,250,0.4);
+    color: #c4b5fd;
+    box-shadow: 0 0 8px rgba(167,139,250,0.25);
+  }
+
+  /* Challenge comparison */
+  .pc-challenge-comparison {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 12px;
+    align-items: center;
+    background: rgba(5,8,16,0.5);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px;
+    padding: 10px 14px;
+    margin-top: 10px;
+  }
+
+  /* Table styling for assumption collapse */
+  .pc-table-container {
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  .pc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+    text-align: left;
+  }
+
+  .pc-table th, .pc-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .pc-table th {
+    font-weight: 700;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.65rem;
+  }
 `;
 
 export default function RootLayout({

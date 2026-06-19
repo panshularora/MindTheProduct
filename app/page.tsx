@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem, ExecutiveSummary } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
 
@@ -23,9 +23,9 @@ const JUDGE_FEEDBACK = `USER FEEDBACK & METRICS:
 - Positive: 23% of simple how-to queries were correctly resolved by the bot.`;
 
 const PERSONA = {
-  growth: { name: 'Growth Optimist', emoji: '🚀', color: '#34d399', bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.2)', desc: 'Ship fast · Capture market' },
-  eng_realist: { name: 'Eng Realist', emoji: '⚙️', color: '#60a5fa', bg: 'rgba(96,165,250,0.08)', border: 'rgba(96,165,250,0.2)', desc: 'Feasibility · Tech debt' },
-  user_advocate: { name: 'User Advocate', emoji: '👤', color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.2)', desc: 'Usability · Real feedback' },
+  growth: { name: 'Growth Optimist', emoji: '🚀', title: 'VP of Growth', color: '#34d399', bg: 'rgba(52,211,153,0.06)', border: 'rgba(52,211,153,0.2)', desc: 'Ship fast · Capture market' },
+  eng_realist: { name: 'Eng Realist', emoji: '⚙️', title: 'Principal Architect', color: '#60a5fa', bg: 'rgba(96,165,250,0.06)', border: 'rgba(96,165,250,0.2)', desc: 'Feasibility · Tech debt' },
+  user_advocate: { name: 'User Advocate', emoji: '👤', title: 'Director of UX', color: '#a78bfa', bg: 'rgba(167,139,250,0.06)', border: 'rgba(167,139,250,0.2)', desc: 'Usability · Real feedback' },
 } as const;
 
 const SRC_STYLE: Record<string, { bg: string; color: string; border: string }> = {
@@ -43,6 +43,21 @@ const VERDICT_STYLE: Record<string, { bg: string; color: string; border: string 
   modify: { bg: 'rgba(251,146,60,0.1)', color: '#fb923c', border: 'rgba(251,146,60,0.3)' },
   cut: { bg: 'rgba(248,113,113,0.1)', color: '#f87171', border: 'rgba(248,113,113,0.3)' },
 };
+
+function getDownstreamNodeIds(nodeId: string, edges: { from: string; to: string }[]): Set<string> {
+  const visited = new Set<string>();
+  const queue = [nodeId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const edge of edges) {
+      if (edge.from === current && !visited.has(edge.to)) {
+        visited.add(edge.to);
+        queue.push(edge.to);
+      }
+    }
+  }
+  return visited;
+}
 
 function computeSummary(nodes: Node[], logs: DebateLog[], roadmap: RoadmapItem[]): ExecutiveSummary {
   const stale = nodes.filter(n => n.status === 'stale');
@@ -90,18 +105,110 @@ export default function Home() {
   const [summary, setSummary] = useState<ExecutiveSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
+  
+  // Decision Impact Engine states
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [impactedNodeIds, setImpactedNodeIds] = useState<Set<string>>(new Set());
+
+  // Challenge states
+  const [challengingItemId, setChallengingItemId] = useState<string | null>(null);
+  const [challengeHistory, setChallengeHistory] = useState<Record<string, { previous: string; current: string }>>({});
+
+  // Walkthrough states
+  const [walkthroughActive, setWalkthroughActive] = useState(false);
+  const [walkthroughStep, setWalkthroughStep] = useState(0);
+
   const [thinkingAgent, setThinkingAgent] = useState<{ nodeId: string; persona: keyof typeof PERSONA } | null>(null);
   const [expandedDebate, setExpandedDebate] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'graph' | 'heatmap'>('graph');
   const [isJudgeMode, setIsJudgeMode] = useState(false);
 
-  const handleJudgeMode = () => { setPrd(JUDGE_PRD); setFeatureRequests(JUDGE_FEATURES); setFeedback(JUDGE_FEEDBACK); setIsJudgeMode(true); };
+  const WALKTHROUGH_STEPS = [
+    {
+      title: "1. Conflicting Evidence",
+      description: "Feedback F4 ($4k incorrect payout, ticket auto-closes) directly contradicts PRD goals, triggering systemic risk flags.",
+      action: (currentNodes: Node[]) => {
+        const feedbackNode = currentNodes.find(n => n.id === 'n8' || n.text.includes('4,000') || n.source === 'feedback');
+        if (feedbackNode) {
+          setSelectedNode(feedbackNode);
+          if (graph) {
+            setImpactedNodeIds(getDownstreamNodeIds(feedbackNode.id, graph.edges));
+          }
+          highlightScroll(`node-card-${feedbackNode.id}`);
+        }
+      }
+    },
+    {
+      title: "2. Collapsed Assumptions",
+      description: "Clicking A2 (Assumption: Users prefer AI answers) reveals its confidence collapsed from 90% to 10% due to CSAT drop.",
+      action: (currentNodes: Node[]) => {
+        const assumptionNode = currentNodes.find(n => n.id === 'n2' || n.type === 'assumption');
+        if (assumptionNode) {
+          setSelectedNode(assumptionNode);
+          if (graph) {
+            setImpactedNodeIds(getDownstreamNodeIds(assumptionNode.id, graph.edges));
+          }
+          highlightScroll(`node-card-${assumptionNode.id}`);
+        }
+      }
+    },
+    {
+      title: "3. Agent Disagreement",
+      description: "Check the Live Boardroom debate on auto-resolve feature. Growth demands shipping fast, but Eng & UX side with the user.",
+      action: () => {
+        const targetDebateId = debateLogs[0]?.nodeId || 'n2';
+        setExpandedDebate(targetDebateId);
+        highlightScroll(`debate-session-${targetDebateId}`);
+      }
+    },
+    {
+      title: "4. Causality Roadmap",
+      description: "The synthesis engine shifts the auto-resolve feature to a 'Modify/Cut' status, dropping its priority rank.",
+      action: () => {
+        highlightScroll(`roadmap-section`);
+      }
+    }
+  ];
+
+  const handleJudgeMode = () => {
+    setPrd(JUDGE_PRD);
+    setFeatureRequests(JUDGE_FEATURES);
+    setFeedback(JUDGE_FEEDBACK);
+    setIsJudgeMode(true);
+  };
+
+  // Helper to highlight and scroll
+  const highlightScroll = (elementId: string) => {
+    setTimeout(() => {
+      const el = document.getElementById(elementId);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('pc-highlight-flash');
+        setTimeout(() => el.classList.remove('pc-highlight-flash'), 2000);
+      }
+    }, 100);
+  };
+
+  const highlightNode = (id: string) => {
+    const node = nodes.find(n => n.id === id);
+    if (node) {
+      setSelectedNode(node);
+      if (graph) {
+        setImpactedNodeIds(getDownstreamNodeIds(node.id, graph.edges));
+      }
+    }
+    highlightScroll(`node-card-${id}`);
+  };
+
+  const highlightDebate = (id: string) => {
+    setExpandedDebate(id);
+    highlightScroll(`debate-session-${id}`);
+  };
 
   const runAnalysis = useCallback(async () => {
     setLoading(true); setError(null); setShowResults(true);
     setNodes([]); setGraph(null); setDebateLogs([]); setRoadmap([]); setSummary(null);
-    setSelectedNode(null); setThinkingAgent(null);
+    setSelectedNode(null); setThinkingAgent(null); setImpactedNodeIds(new Set()); setChallengeHistory({});
     try {
       setActiveStep(1);
       const r1 = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prd, featureRequests, feedback }) });
@@ -146,15 +253,171 @@ export default function Home() {
       setRoadmap(rm);
       setSummary(computeSummary(gd.nodes, logs, rm));
       setActiveStep(5);
+      
+      if (isJudgeMode) {
+        setWalkthroughActive(true);
+        setWalkthroughStep(0);
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unexpected error');
       setActiveStep(0);
     } finally { setLoading(false); }
-  }, [prd, featureRequests, feedback]);
+  }, [prd, featureRequests, feedback, isJudgeMode]);
+
+  // Run automatically when judge mode is loaded and inputs are populated
+  useEffect(() => {
+    if (isJudgeMode && prd && featureRequests && feedback && !loading && !showResults) {
+      runAnalysis();
+    }
+  }, [isJudgeMode, prd, featureRequests, feedback, runAnalysis, loading, showResults]);
+
+  // Challenge Decision Logic
+  const handleChallengeDecision = async (item: RoadmapItem) => {
+    setChallengingItemId(item.id);
+    setLoading(true);
+
+    const relatedIds = [...item.sourceNodes, ...item.relatedDebate];
+    const targetNodes = nodes.filter(n => relatedIds.includes(n.id));
+
+    // Capture current verdicts before challenge
+    const prevVerdicts: Record<string, string> = {};
+    debateLogs.forEach(l => {
+      if (relatedIds.includes(l.nodeId)) {
+        prevVerdicts[l.nodeId] = l.verdict.split(' - ')[0] || l.verdict;
+      }
+    });
+
+    try {
+      setActiveStep(3);
+      const r = await fetch('/api/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staleOrContestedNodes: targetNodes,
+          allNodes: nodes,
+          isChallenge: true
+        })
+      });
+
+      if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.error || 'Challenge debate failed');
+      }
+
+      const reader = r.body?.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      const updatedLogs = [...debateLogs];
+
+      if (reader) {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const d = JSON.parse(line);
+              if (d.type === 'start_debate') {
+                let lg = updatedLogs.find(l => l.nodeId === d.nodeId);
+                if (!lg) {
+                  lg = { nodeId: d.nodeId, turns: [], verdict: '' };
+                  updatedLogs.push(lg);
+                } else {
+                  lg.turns = [];
+                  lg.verdict = '';
+                }
+                setDebateLogs([...updatedLogs]);
+                setExpandedDebate(d.nodeId);
+              } else if (d.type === 'thinking') {
+                setThinkingAgent({ nodeId: d.nodeId, persona: d.persona });
+              } else if (d.type === 'turn') {
+                setThinkingAgent(null);
+                const lg = updatedLogs.find(l => l.nodeId === d.nodeId);
+                if (lg) lg.turns.push(d.turn);
+                setDebateLogs([...updatedLogs]);
+              } else if (d.type === 'verdict') {
+                const lg = updatedLogs.find(l => l.nodeId === d.nodeId);
+                if (lg) {
+                  lg.verdict = d.verdict;
+                  const prev = prevVerdicts[d.nodeId] || 'Proceed';
+                  const current = d.verdict.split(' - ')[0] || d.verdict;
+                  setChallengeHistory(h => ({
+                    ...h,
+                    [d.nodeId]: { previous: prev, current }
+                  }));
+                }
+                setDebateLogs([...updatedLogs]);
+              } else if (d.type === 'complete') {
+                setThinkingAgent(null);
+              }
+            } catch { /* ignore */ }
+          }
+        }
+      }
+
+      setActiveStep(4);
+      const r4 = await fetch('/api/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ graphData: graph || { nodes, edges: [] }, debateLogs: updatedLogs, originalFeatureRequests: featureRequests })
+      });
+      if (!r4.ok) { const e = await r4.json().catch(() => ({})); throw new Error(e.error || 'Re-synthesis failed'); }
+      const { roadmap: rm } = await r4.json();
+      setRoadmap(rm);
+      setSummary(computeSummary(nodes, updatedLogs, rm));
+      setActiveStep(5);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unexpected challenge error');
+    } finally {
+      setLoading(false);
+      setChallengingItemId(null);
+    }
+  };
 
   const staleCount = nodes.filter(n => n.status === 'stale').length;
   const contestedCount = nodes.filter(n => n.status === 'contested').length;
   const freshCount = nodes.filter(n => n.status === 'fresh').length;
+
+  // Strategic Scores Calculations
+  const riskScore = nodes.length ? Math.min(10, Math.round(((staleCount + contestedCount) / nodes.length) * 10)) : 0;
+  const alignmentScore = nodes.length ? Math.round((freshCount / nodes.length) * 100) : 0;
+  
+  const assumptions = nodes.filter(n => n.type === 'assumption');
+  const getPostConfidence = (node: Node) => {
+    const log = debateLogs.find(l => l.nodeId === node.id);
+    if (!log || !log.verdict) return Math.round(node.confidence * 100);
+    const v = log.verdict.toLowerCase();
+    if (v.startsWith('proceed')) return Math.round(node.confidence * 100);
+    if (v.startsWith('cut')) return 10;
+    return 45; // Modify
+  };
+  const confidenceScore = assumptions.length
+    ? Math.round(assumptions.reduce((acc, curr) => acc + getPostConfidence(curr), 0) / assumptions.length)
+    : nodes.length ? Math.round((nodes.reduce((acc, curr) => acc + curr.confidence, 0) / nodes.length) * 100) : 0;
+
+  const executionDifficulty = roadmap.length
+    ? Math.min(10, Math.round((roadmap.length * 1.3) + (contestedCount * 0.7)))
+    : 0;
+
+  // Impact Radius details
+  const getImpactDetails = (nodeId: string) => {
+    if (!graph) return { nodes: 0, debates: 0, roadmaps: 0 };
+    const downstream = getDownstreamNodeIds(nodeId, graph.edges);
+    const debatesCount = debateLogs.filter(d => downstream.has(d.nodeId) || d.nodeId === nodeId).length;
+    const roadmapsCount = roadmap.filter(r => 
+      r.sourceNodes.some(s => downstream.has(s) || s === nodeId) || 
+      r.relatedDebate.some(d => downstream.has(d) || d === nodeId)
+    ).length;
+
+    return {
+      nodes: downstream.size,
+      debates: debatesCount,
+      roadmaps: roadmapsCount
+    };
+  };
 
   const STEPS = [
     { id: 1, label: 'Extract', icon: '📊', color: '#2dd4bf' },
@@ -182,7 +445,7 @@ export default function Home() {
             </div>
             <div>
               <div className="pc-logo-title">Product Council AI</div>
-              <div className="pc-logo-sub">AI Executive Boardroom · 4-Stage Decision Engine</div>
+              <div className="pc-logo-sub">Decision Intelligence System · Causality-Driven Reasoning</div>
             </div>
           </div>
           <button className="pc-btn-judge" onClick={handleJudgeMode} disabled={loading}>
@@ -194,6 +457,59 @@ export default function Home() {
       {/* MAIN */}
       <main className="pc-main">
         <div className="pc-content">
+
+          {/* JUDGE WALKTHROUGH PANEL */}
+          {walkthroughActive && nodes.length > 0 && (
+            <div className="pc-walkthrough-card pc-fade-in">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  👑 Interactive Judge Walkthrough
+                </span>
+                <button style={{ background: 'transparent', border: 'none', color: '#8b949e', cursor: 'pointer', fontSize: '0.72rem' }} onClick={() => setWalkthroughActive(false)}>✕ Skip</button>
+              </div>
+              <p style={{ fontSize: '0.8rem', color: '#c9d1d9', lineHeight: 1.5 }}>
+                {WALKTHROUGH_STEPS[walkthroughStep].description}
+              </p>
+              <div className="pc-walkthrough-steps">
+                {WALKTHROUGH_STEPS.map((step, idx) => (
+                  <button
+                    key={idx}
+                    className={`pc-walkthrough-step-btn ${walkthroughStep === idx ? 'pc-walkthrough-step-btn-active' : ''}`}
+                    onClick={() => {
+                      setWalkthroughStep(idx);
+                      step.action(nodes);
+                    }}
+                  >
+                    {step.title}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+                <button
+                  disabled={walkthroughStep === 0}
+                  onClick={() => {
+                    const nextIdx = walkthroughStep - 1;
+                    setWalkthroughStep(nextIdx);
+                    WALKTHROUGH_STEPS[nextIdx].action(nodes);
+                  }}
+                  style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, color: '#8b949e', padding: '4px 10px', fontSize: '0.7rem', cursor: 'pointer' }}
+                >
+                  Back
+                </button>
+                <button
+                  disabled={walkthroughStep === WALKTHROUGH_STEPS.length - 1}
+                  onClick={() => {
+                    const nextIdx = walkthroughStep + 1;
+                    setWalkthroughStep(nextIdx);
+                    WALKTHROUGH_STEPS[nextIdx].action(nodes);
+                  }}
+                  style={{ background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', borderRadius: 6, color: '#c4b5fd', padding: '4px 12px', fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Next Step
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* INPUT CARD */}
           <div className="pc-card">
@@ -279,25 +595,29 @@ export default function Home() {
           {showResults && (
             <div className="pc-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
-              {/* Stats Bar */}
+              {/* UPGRADED STRATEGIC SCORE DASHBOARD */}
               {nodes.length > 0 && (
-                <div className="pc-stats-bar">
-                  {[
-                    { label: 'Total Nodes', val: nodes.length, color: '#f0f6fc' },
-                    { label: 'Fresh', val: freshCount, color: '#34d399' },
-                    { label: 'Contested', val: contestedCount, color: '#fb923c' },
-                    { label: 'Stale', val: staleCount, color: '#f87171' },
-                    { label: 'Debates', val: debateLogs.length, color: '#a78bfa' },
-                    { label: 'Roadmap', val: roadmap.length, color: '#60a5fa' },
-                  ].map((s, i, arr) => (
-                    <div key={s.label} style={{ display: 'flex', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, padding: '0 20px' }}>
-                        <span style={{ fontWeight: 900, fontSize: '1.8rem', lineHeight: 1, color: s.color, fontFamily: 'monospace', letterSpacing: '-0.04em' }}>{s.val}</span>
-                        <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#484f58' }}>{s.label}</span>
-                      </div>
-                      {i < arr.length - 1 && <div style={{ width: 1, height: 36, background: 'rgba(255,255,255,0.06)' }} />}
-                    </div>
-                  ))}
+                <div className="pc-score-grid">
+                  <div className="pc-score-card">
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f87171' }}>Risk Score</span>
+                    <span className="pc-score-value" style={{ color: riskScore >= 7 ? '#ef4444' : riskScore >= 4 ? '#fb923c' : '#34d399' }}>{riskScore}/10</span>
+                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Stale & Contested claims</span>
+                  </div>
+                  <div className="pc-score-card">
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#34d399' }}>Alignment Score</span>
+                    <span className="pc-score-value" style={{ color: alignmentScore >= 70 ? '#34d399' : alignmentScore >= 40 ? '#fb923c' : '#ef4444' }}>{alignmentScore}%</span>
+                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Fresh validated ideas</span>
+                  </div>
+                  <div className="pc-score-card">
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#a78bfa' }}>Confidence Score</span>
+                    <span className="pc-score-value" style={{ color: confidenceScore >= 70 ? '#34d399' : confidenceScore >= 40 ? '#fb923c' : '#ef4444' }}>{confidenceScore}%</span>
+                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Assumption health rating</span>
+                  </div>
+                  <div className="pc-score-card">
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#60a5fa' }}>Difficulty Index</span>
+                    <span className="pc-score-value" style={{ color: executionDifficulty >= 7 ? '#ef4444' : executionDifficulty >= 4 ? '#fb923c' : '#34d399' }}>{executionDifficulty}/10</span>
+                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Eng complexity weight</span>
+                  </div>
                 </div>
               )}
 
@@ -308,6 +628,7 @@ export default function Home() {
                   <span className="pc-stage-name">Intelligence Extraction & Dependency Graph</span>
                 </div>
                 <div className="pc-two-col">
+                  
                   {/* Nodes List */}
                   <div className="pc-card pc-scroll-card" style={{ padding: 0 }}>
                     <div className="pc-card-header">
@@ -319,10 +640,25 @@ export default function Home() {
                       {nodes.length > 0 ? nodes.map(node => {
                         const ss = STATUS_STYLE[node.status]; const src = SRC_STYLE[node.source];
                         const isSelected = selectedNode?.id === node.id;
+                        const isImpacted = impactedNodeIds.has(node.id);
+                        
                         return (
-                          <button key={node.id} className="pc-node-btn" onClick={() => setSelectedNode(node)}
-                            style={{ background: isSelected ? 'rgba(45,212,191,0.06)' : node.status === 'stale' ? 'rgba(251,146,60,0.04)' : node.status === 'contested' ? 'rgba(248,113,113,0.04)' : 'rgba(5,8,16,0.5)', border: `1px solid ${isSelected ? 'rgba(45,212,191,0.3)' : node.status !== 'fresh' ? ss.border : 'rgba(255,255,255,0.06)'}` }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                          <button 
+                            key={node.id} 
+                            id={`node-card-${node.id}`} 
+                            className={`pc-node-btn ${isImpacted ? 'pc-node-impacted' : ''}`} 
+                            onClick={() => {
+                              setSelectedNode(node);
+                              if (graph) {
+                                setImpactedNodeIds(getDownstreamNodeIds(node.id, graph.edges));
+                              }
+                            }}
+                            style={{ 
+                              background: isSelected ? 'rgba(45,212,191,0.06)' : isImpacted ? 'rgba(167,139,250,0.03)' : node.status === 'stale' ? 'rgba(251,146,60,0.04)' : node.status === 'contested' ? 'rgba(248,113,113,0.04)' : 'rgba(5,8,16,0.5)', 
+                              border: `1px solid ${isSelected ? 'rgba(45,212,191,0.3)' : isImpacted ? 'rgba(167,139,250,0.3)' : node.status !== 'fresh' ? ss.border : 'rgba(255,255,255,0.06)'}` 
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', width: '100%' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
                                 <span style={{ fontSize: '0.63rem', fontFamily: 'monospace', padding: '1px 6px', borderRadius: 4, background: 'rgba(255,255,255,0.06)', color: '#8b949e' }}>{node.id}</span>
                                 <Badge style={src}>{node.source.replace('_', ' ')}</Badge>
@@ -330,7 +666,7 @@ export default function Home() {
                               <Badge style={ss}>{node.status === 'stale' ? '🔴' : node.status === 'contested' ? '🟡' : '🟢'} {node.status}</Badge>
                             </div>
                             <p style={{ fontSize: '0.78rem', color: '#c9d1d9', lineHeight: 1.55 }}>{node.text}</p>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, width: '100%' }}>
                               <span style={{ fontSize: '0.62rem', fontFamily: 'monospace', color: '#484f58' }}>{node.type}</span>
                               <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                                 <div style={{ width: 60, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 2, overflow: 'hidden' }}>
@@ -356,7 +692,7 @@ export default function Home() {
                       <div className="pc-tabs">
                         {(['graph', 'heatmap'] as const).map(tab => (
                           <button key={tab} className={`pc-tab ${activeTab === tab ? 'pc-tab-active' : 'pc-tab-inactive'}`} onClick={() => setActiveTab(tab)}>
-                            {tab === 'graph' ? 'Dependency Graph' : 'Decision Heatmap'}
+                            {tab === 'graph' ? 'Hierarchical Graph' : 'Decision Heatmap'}
                           </button>
                         ))}
                       </div>
@@ -365,7 +701,17 @@ export default function Home() {
                       {activeTab === 'graph' ? (
                         graph ? (
                           <>
-                            <DependencyGraph data={graph} onNodeSelect={setSelectedNode} selectedNode={selectedNode} />
+                            <DependencyGraph 
+                              data={graph} 
+                              onNodeSelect={(node) => {
+                                setSelectedNode(node);
+                                setImpactedNodeIds(getDownstreamNodeIds(node.id, graph.edges));
+                              }} 
+                              selectedNode={selectedNode}
+                              onImpactChange={(nodeId, impactedIds) => {
+                                setImpactedNodeIds(impactedIds);
+                              }}
+                            />
                             {selectedNode && (
                               <div style={{ borderRadius: 12, padding: 14, background: 'rgba(5,8,16,0.7)', border: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: 8, animation: 'pcFadeIn 0.3s ease' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
@@ -376,6 +722,18 @@ export default function Home() {
                                   <Badge style={STATUS_STYLE[selectedNode.status]}>{selectedNode.status}</Badge>
                                 </div>
                                 <p style={{ fontSize: '0.8rem', color: '#c9d1d9', lineHeight: 1.6 }}>{selectedNode.text}</p>
+                                
+                                {/* DECISION IMPACT ENGINE CARD */}
+                                {(() => {
+                                  const details = getImpactDetails(selectedNode.id);
+                                  return (
+                                    <div style={{ background: 'rgba(167,139,250,0.04)', border: '1px solid rgba(167,139,250,0.18)', borderRadius: 8, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#c4b5fd' }}>
+                                      <span>💥 Impact Radius: <strong>{details.nodes + details.debates + details.roadmaps} items</strong></span>
+                                      <span style={{ color: '#8b949e' }}>({details.nodes} nodes, {details.debates} debates, {details.roadmaps} roadmap targets)</span>
+                                    </div>
+                                  );
+                                })()}
+                                
                                 <div style={{ display: 'flex', gap: 16, fontSize: '0.72rem', flexWrap: 'wrap' }}>
                                   <span style={{ color: '#484f58' }}>Type: <span style={{ color: '#8b949e' }}>{selectedNode.type}</span></span>
                                   <span style={{ color: '#484f58' }}>Confidence: <span style={{ color: '#8b949e' }}>{(selectedNode.confidence * 100).toFixed(0)}%</span></span>
@@ -394,8 +752,67 @@ export default function Home() {
                       )}
                     </div>
                   </div>
+
                 </div>
               </div>
+
+              {/* Stage 01.5 ASSUMPTION COLLAPSE PANEL */}
+              {nodes.length > 0 && assumptions.length > 0 && (
+                <div>
+                  <div className="pc-stage-label">
+                    <span className="pc-stage-num">01.5</span>
+                    <span className="pc-stage-name">Assumption Collapse Panel & Risk Tracker</span>
+                  </div>
+                  <div className="pc-card">
+                    <div className="pc-table-container">
+                      <table className="pc-table">
+                        <thead>
+                          <tr>
+                            <th>Assumption ID & Statement</th>
+                            <th style={{ textAlign: 'center' }}>Initial Conf.</th>
+                            <th style={{ textAlign: 'center' }}>Post-Debate Conf.</th>
+                            <th style={{ textAlign: 'center' }}>Drop</th>
+                            <th>Downstream Decisions Affected</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {assumptions.map(node => {
+                            const beforeConf = Math.round(node.confidence * 100);
+                            const afterConf = getPostConfidence(node);
+                            const drop = beforeConf - afterConf;
+                            
+                            const downstreamSet = graph ? getDownstreamNodeIds(node.id, graph.edges) : new Set<string>();
+                            const affected = nodes.filter(n => downstreamSet.has(n.id) && n.type === 'requirement').map(n => n.id);
+                            const affectedRm = roadmap.filter(r => r.sourceNodes.some(s => downstreamSet.has(s) || s === node.id)).map(r => r.id);
+                            const affectedList = [...affected, ...affectedRm].join(', ') || 'None';
+
+                            return (
+                              <tr key={node.id}>
+                                <td>
+                                  <div style={{ fontWeight: 700, color: '#f0f6fc', marginBottom: 2 }}>{node.id}</div>
+                                  <div style={{ color: '#8b949e', fontSize: '0.7rem' }}>{node.text}</div>
+                                </td>
+                                <td style={{ textAlign: 'center', fontWeight: 600, color: '#94a3b8' }}>{beforeConf}%</td>
+                                <td style={{ textAlign: 'center', fontWeight: 700, color: afterConf >= 70 ? '#34d399' : afterConf >= 40 ? '#fb923c' : '#f87171' }}>{afterConf}%</td>
+                                <td style={{ textAlign: 'center' }}>
+                                  {drop > 0 ? (
+                                    <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '2px 6px', borderRadius: 4, background: drop >= 40 ? 'rgba(248,113,113,0.12)' : 'rgba(251,146,60,0.12)', color: drop >= 40 ? '#f87171' : '#fb923c', border: `1px solid ${drop >= 40 ? 'rgba(248,113,113,0.2)' : 'rgba(251,146,60,0.2)'}` }}>
+                                      ↓ {drop}% {drop >= 40 ? 'CRITICAL' : ''}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: '#8b949e' }}>—</span>
+                                  )}
+                                </td>
+                                <td style={{ fontFamily: 'monospace', color: '#c4b5fd' }}>{affectedList}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Separator */}
               <div className="pc-separator">
@@ -405,7 +822,7 @@ export default function Home() {
               </div>
 
               {/* Stage 02 Debate */}
-              <div>
+              <div id="debate-section">
                 <div className="pc-stage-label">
                   <span className="pc-stage-num">02</span>
                   <span className="pc-stage-name">AI Boardroom Debate · 3-Agent Alignment Council</span>
@@ -419,63 +836,76 @@ export default function Home() {
                         <span style={{ fontSize: '1rem' }}>{p.emoji}</span>
                         <div>
                           <div style={{ fontWeight: 700, color: p.color }}>{p.name}</div>
-                          <div style={{ fontSize: '0.6rem', color: '#484f58' }}>{p.desc}</div>
+                          <div style={{ fontSize: '0.6rem', color: '#8b949e', fontWeight: 600 }}>{p.title}</div>
                         </div>
                       </div>
                     ))}
                   </div>
+
                   {/* Debate sessions */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {debateLogs.length > 0 ? debateLogs.map(log => {
                       const node = (graph?.nodes || nodes).find(x => x.id === log.nodeId);
                       const isExpanded = expandedDebate === log.nodeId || debateLogs.length === 1;
+                      const isImpacted = impactedNodeIds.has(log.nodeId) || selectedNode?.id === log.nodeId;
                       const vkey = log.verdict?.toLowerCase().startsWith('proceed') ? 'proceed' : log.verdict?.toLowerCase().startsWith('cut') ? 'cut' : 'modify';
                       const vs = VERDICT_STYLE[vkey];
                       const isLive = thinkingAgent?.nodeId === log.nodeId;
                       const ns = node?.status ? STATUS_STYLE[node.status] : STATUS_STYLE.contested;
+                      
                       return (
-                        <div key={log.nodeId} className="pc-debate-session">
+                        <div key={log.nodeId} id={`debate-session-${log.nodeId}`} className={`pc-debate-session ${isImpacted ? 'pc-debate-impacted' : ''}`} style={{ border: isImpacted ? '1px solid rgba(167,139,250,0.4)' : undefined }}>
                           <button className="pc-debate-session-btn" onClick={() => setExpandedDebate(isExpanded ? null : log.nodeId)}>
                             <Badge style={ns}>{node?.status?.toUpperCase() || 'CONTESTED'}</Badge>
                             <span style={{ fontSize: '0.68rem', fontFamily: 'monospace', color: '#484f58', flexShrink: 0 }}>{log.nodeId}</span>
                             <span style={{ fontSize: '0.75rem', color: '#8b949e', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node?.text}</span>
+                            
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                               {log.verdict && <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '2px 9px', borderRadius: 20, background: vs.bg, color: vs.color, border: `1px solid ${vs.border}` }}>{log.verdict.split(' - ')[0]}</span>}
                               {isLive && <span style={{ fontSize: '0.62rem', fontWeight: 700, color: '#f87171' }} className="pc-blink">● LIVE</span>}
                               <svg style={{ color: '#484f58', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', flexShrink: 0 }} width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                             </div>
                           </button>
+                          
                           {isExpanded && (
                             <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
                               {log.turns.map((turn, i) => {
                                 const p = PERSONA[turn.persona];
                                 return (
-                                  <div key={i} style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}`, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: '0.72rem', fontWeight: 700, color: p.color }}>
-                                      <span style={{ fontSize: '0.95rem' }}>{p.emoji}</span>
-                                      <span>{p.name}</span>
-                                      {turn.respondingTo && <span style={{ fontWeight: 400, color: '#484f58', fontSize: '0.65rem' }}>↩ responding to {PERSONA[turn.respondingTo as keyof typeof PERSONA]?.name}</span>}
+                                  <div key={i} className="pc-fade-in" style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}`, display: 'flex', gap: 10 }}>
+                                    <div className="pc-chat-avatar" style={{ background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}35` }}>
+                                      {p.emoji}
                                     </div>
-                                    <p style={{ fontSize: '0.8rem', color: '#c9d1d9', lineHeight: 1.65 }}>{turn.text}</p>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                                      <div className="pc-chat-title-group">
+                                        <span style={{ fontSize: '0.72rem', fontWeight: 800, color: p.color }}>{p.name} <span className="pc-chat-role">({p.title})</span></span>
+                                        {turn.respondingTo && <span style={{ fontWeight: 400, color: '#484f58', fontSize: '0.65rem' }}>↩ responding to {PERSONA[turn.respondingTo as keyof typeof PERSONA]?.name}</span>}
+                                      </div>
+                                      <p style={{ fontSize: '0.8rem', color: '#c9d1d9', lineHeight: 1.6 }}>{turn.text}</p>
+                                    </div>
                                   </div>
                                 );
                               })}
+                              
                               {/* Typing indicator */}
                               {isLive && thinkingAgent && (() => {
                                 const p = PERSONA[thinkingAgent.persona];
                                 return (
-                                  <div style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}` }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: '0.72rem', fontWeight: 700, color: p.color, marginBottom: 8 }}>
-                                      <span>{p.emoji}</span><span>{p.name}</span><span style={{ fontWeight: 400, color: '#484f58' }}>is thinking...</span>
-                                    </div>
-                                    <div style={{ display: 'flex', gap: 5 }}>
-                                      <span className="pc-dot pc-dot-1" style={{ background: p.color }} />
-                                      <span className="pc-dot pc-dot-2" style={{ background: p.color }} />
-                                      <span className="pc-dot pc-dot-3" style={{ background: p.color }} />
+                                  <div style={{ borderRadius: 12, padding: 12, background: p.bg, border: `1px solid ${p.border}`, display: 'flex', gap: 10 }}>
+                                    <div className="pc-chat-avatar" style={{ background: `${p.color}15`, color: p.color, border: `1px solid ${p.color}35` }}>{p.emoji}</div>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1 }}>
+                                      <span style={{ fontSize: '0.72rem', fontWeight: 800, color: p.color }}>{p.name} <span className="pc-chat-role">({p.title}) is typing...</span></span>
+                                      <div style={{ display: 'flex', gap: 5, padding: '4px 0' }}>
+                                        <span className="pc-dot pc-dot-1" style={{ background: p.color }} />
+                                        <span className="pc-dot pc-dot-2" style={{ background: p.color }} />
+                                        <span className="pc-dot pc-dot-3" style={{ background: p.color }} />
+                                      </div>
                                     </div>
                                   </div>
                                 );
                               })()}
+
+                              {/* Verdict panel */}
                               {log.verdict && (
                                 <div style={{ borderRadius: 12, padding: 12, background: vs.bg, border: `1px solid ${vs.border}` }}>
                                   <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: vs.color, marginBottom: 6 }}>👤 User Advocate Verdict</div>
@@ -522,10 +952,6 @@ export default function Home() {
                           <div style={{ fontWeight: 700, fontSize: '0.9rem' }}>Executive Summary</div>
                           <div style={{ fontSize: '0.65rem', color: '#484f58' }}>AI Boardroom Decision Brief</div>
                         </div>
-                        <div style={{ marginLeft: 'auto', textAlign: 'center' }}>
-                          <div style={{ fontSize: '0.6rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#484f58', marginBottom: 2 }}>Alignment</div>
-                          <div style={{ fontSize: '1.6rem', fontWeight: 900, lineHeight: 1, fontFamily: 'monospace', color: summary.alignmentScore >= 70 ? '#34d399' : summary.alignmentScore >= 40 ? '#fb923c' : '#f87171' }}>{summary.alignmentScore}%</div>
-                        </div>
                       </div>
                       <div className="pc-exec-grid">
                         {[
@@ -550,7 +976,7 @@ export default function Home() {
 
               {/* Stage 04 Roadmap */}
               {(roadmap.length > 0 || activeStep === 4) && (
-                <div>
+                <div id="roadmap-section">
                   <div className="pc-stage-label">
                     <span className="pc-stage-num">04</span>
                     <span className="pc-stage-name">Synthesized & Ranked Product Roadmap</span>
@@ -559,23 +985,127 @@ export default function Home() {
                   <div className="pc-card">
                     {roadmap.length > 0 ? (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                        {roadmap.map((item, i) => (
-                          <div key={item.id} className="pc-roadmap-item" style={{ background: 'rgba(5,8,16,0.5)', border: '1px solid rgba(255,255,255,0.07)' }}>
-                            <div style={{ width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '0.82rem', flexShrink: 0, background: i === 0 ? 'linear-gradient(135deg, #2dd4bf, #34d399)' : 'rgba(255,255,255,0.05)', color: i === 0 ? '#fff' : '#8b949e', border: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.08)' }}>#{item.rank}</div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <h3 style={{ fontWeight: 700, fontSize: '0.88rem', color: '#f0f6fc', marginBottom: 6 }}>{item.title}</h3>
-                              <p style={{ fontSize: '0.78rem', color: '#8b949e', lineHeight: 1.6, marginBottom: 10 }}>{item.rationale}</p>
-                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                                {item.relatedDebate.map(id => (
-                                  <button key={id} onClick={() => setExpandedDebate(id)} style={{ fontSize: '0.65rem', padding: '2px 9px', borderRadius: 20, cursor: 'pointer', background: 'rgba(167,139,250,0.1)', color: '#c4b5fd', border: '1px solid rgba(167,139,250,0.25)', fontFamily: 'inherit' }}>⚡ {id}</button>
-                                ))}
-                                {item.sourceNodes.map(id => (
-                                  <button key={id} onClick={() => { const n = nodes.find(x => x.id === id); if (n) setSelectedNode(n); }} style={{ fontSize: '0.65rem', padding: '2px 9px', borderRadius: 20, cursor: 'pointer', background: 'rgba(45,212,191,0.08)', color: '#5eead4', border: '1px solid rgba(45,212,191,0.2)', fontFamily: 'inherit' }}>→ {id}</button>
-                                ))}
+                        {roadmap.map((item, i) => {
+                          const isChallenging = challengingItemId === item.id;
+                          const hasChanged = item.sourceNodes.some(s => challengeHistory[s]) || item.relatedDebate.some(d => challengeHistory[d]);
+                          const isImpacted = item.sourceNodes.some(s => impactedNodeIds.has(s) || selectedNode?.id === s);
+
+                          return (
+                            <div 
+                              key={item.id} 
+                              className={`pc-roadmap-item ${isImpacted ? 'pc-roadmap-impacted' : ''}`} 
+                              style={{ 
+                                background: 'rgba(5,8,16,0.5)', 
+                                border: isImpacted ? '1px solid rgba(167,139,250,0.4)' : '1px solid rgba(255,255,255,0.07)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: 12
+                              }}
+                            >
+                              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', width: '100%' }}>
+                                <div style={{ width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '0.82rem', flexShrink: 0, background: i === 0 ? 'linear-gradient(135deg, #2dd4bf, #34d399)' : 'rgba(255,255,255,0.05)', color: i === 0 ? '#fff' : '#8b949e', border: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.08)' }}>#{item.rank}</div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                                    <h3 style={{ fontWeight: 700, fontSize: '0.88rem', color: '#f0f6fc' }}>{item.title}</h3>
+                                    
+                                    {/* CHALLENGE BUTTON */}
+                                    <button 
+                                      onClick={() => handleChallengeDecision(item)} 
+                                      disabled={loading} 
+                                      style={{ 
+                                        fontSize: '0.65rem', 
+                                        fontWeight: 700, 
+                                        padding: '4px 10px', 
+                                        borderRadius: 6, 
+                                        background: 'rgba(239,68,68,0.1)', 
+                                        border: '1px solid rgba(239,68,68,0.25)', 
+                                        color: '#ef4444', 
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s'
+                                      }}
+                                    >
+                                      {isChallenging ? '⚡ Challenging...' : '🔴 Challenge Decision'}
+                                    </button>
+                                  </div>
+                                  <p style={{ fontSize: '0.78rem', color: '#8b949e', lineHeight: 1.6, marginTop: 4, marginBottom: 8 }}>{item.rationale}</p>
+                                  
+                                  {/* UPGRADED ROADMAP TRACEABILITY */}
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8, borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: 8 }}>
+                                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                                      <span style={{ fontSize: '0.6rem', fontWeight: 700, color: '#484f58', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Trace Sources:</span>
+                                      
+                                      {/* Source badge triggers */}
+                                      {item.sourceNodes.map(id => {
+                                        const node = nodes.find(n => n.id === id);
+                                        const badgeType = node?.type || 'node';
+                                        return (
+                                          <button 
+                                            key={id} 
+                                            onClick={() => highlightNode(id)} 
+                                            style={{ 
+                                              fontSize: '0.62rem', 
+                                              padding: '2px 8px', 
+                                              borderRadius: 20, 
+                                              cursor: 'pointer', 
+                                              background: badgeType === 'assumption' ? 'rgba(251,146,60,0.08)' : badgeType === 'feedback_signal' ? 'rgba(167,139,250,0.08)' : 'rgba(45,212,191,0.08)', 
+                                              color: badgeType === 'assumption' ? '#fb923c' : badgeType === 'feedback_signal' ? '#c4b5fd' : '#2dd4bf', 
+                                              border: `1px solid ${badgeType === 'assumption' ? 'rgba(251,146,60,0.2)' : badgeType === 'feedback_signal' ? 'rgba(167,139,250,0.2)' : 'rgba(45,212,191,0.2)'}`, 
+                                              fontFamily: 'JetBrains Mono, monospace' 
+                                            }}
+                                          >
+                                            {id}
+                                          </button>
+                                        );
+                                      })}
+
+                                      {/* Debate triggers */}
+                                      {item.relatedDebate.map(id => (
+                                        <button 
+                                          key={id} 
+                                          onClick={() => highlightDebate(id)} 
+                                          style={{ 
+                                            fontSize: '0.62rem', 
+                                            padding: '2px 8px', 
+                                            borderRadius: 20, 
+                                            cursor: 'pointer', 
+                                            background: 'rgba(167,139,250,0.1)', 
+                                            color: '#c4b5fd', 
+                                            border: '1px solid rgba(167,139,250,0.25)',
+                                            fontFamily: 'JetBrains Mono, monospace'
+                                          }}
+                                        >
+                                          ⚡ Debate {id}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                </div>
                               </div>
+
+                              {/* CHALLENGE VERDICT COMPARISON CARD */}
+                              {hasChanged && (() => {
+                                const targetId = item.sourceNodes.find(s => challengeHistory[s]) || item.relatedDebate.find(d => challengeHistory[d]);
+                                if (!targetId) return null;
+                                const hist = challengeHistory[targetId];
+                                return (
+                                  <div className="pc-challenge-comparison pc-fade-in">
+                                    <div style={{ textAlign: 'center' }}>
+                                      <div style={{ fontSize: '0.58rem', textTransform: 'uppercase', color: '#8b949e', marginBottom: 2 }}>Previous Verdict</div>
+                                      <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: 'rgba(52,211,153,0.1)', color: '#34d399', border: '1px solid rgba(52,211,153,0.2)' }}>{hist.previous}</span>
+                                    </div>
+                                    <div style={{ color: '#8b949e', fontSize: '0.8rem', fontWeight: 800 }}>➔</div>
+                                    <div style={{ textAlign: 'center' }}>
+                                      <div style={{ fontSize: '0.58rem', textTransform: 'uppercase', color: '#8b949e', marginBottom: 2 }}>New Verdict (Challenged)</div>
+                                      <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: hist.current.startsWith('Cut') ? 'rgba(239,68,68,0.1)' : 'rgba(251,146,60,0.1)', color: hist.current.startsWith('Cut') ? '#ef4444' : '#fb923c', border: `1px solid ${hist.current.startsWith('Cut') ? 'rgba(239,68,68,0.2)' : 'rgba(251,146,60,0.2)'}` }}>{hist.current}</span>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '3rem', textAlign: 'center' }}>
