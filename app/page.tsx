@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
 import DebateTranscript from '@/components/DebateTranscript';
+import RoadmapView from '@/components/RoadmapView';
 
 const STEPS = [
   { id: 1, name: 'Extracting Nodes', description: 'Parsing claims, assumptions, requirements, and feedback signals' },
@@ -25,6 +26,21 @@ const SAMPLE_FEATURE_REQUESTS = `FEATURE REQUESTS:
 const SAMPLE_FEEDBACK = `USER FEEDBACK SUMMARY:
 - Customer feedback: "Real-time cursors are extremely annoying when several people are in the same document. It clutters the screen. We prefer threaded comment sections to communicate."
 - User interview: "I just need a quick way to invite external clients to review my notes without forcing them to create an account."`;
+
+const TRY_EXAMPLE_PRD = `PRODUCT REQUIREMENT DOCUMENT: AI support agent
+Goal: Reduce customer support seat costs and lower first-response times.
+Key Claim: Integrating an automated AI customer support chatbot will handle 50% of incoming queries, lowering average resolution times by 80%.
+Assumption: Users prefer getting an immediate answer from an AI support agent over waiting 15 minutes in queue for a human agent.`;
+
+const TRY_EXAMPLE_FEATURES = `FEATURE REQUESTS:
+- Embeddable AI chatbot widget inside the web dashboard.
+- Auto-resolve ticket logic: automatically close support tickets once the AI chatbot provides an answer.
+- Automated API-level action handlers for AI to process user refunds and plan downgrades without staff review.`;
+
+const TRY_EXAMPLE_FEEDBACK = `USER FEEDBACK & METRICS:
+- CSAT Report: CSAT has dropped from 92% to 68% in the pilot cohort since launching the AI agent.
+- Support Ticket #4820: "Your automated AI chatbot kept repeating the same unhelpful documentation link and then closed my ticket. I couldn't find any button to escape the bot and speak to a human."
+- Support Team Review: Users are creating duplicate tickets because the bot auto-closes threads before they are actually resolved. Billing refund API actions executed by the bot led to $4,000 in incorrect payouts due to lack of verification.`;
 
 export default function Home() {
   const [prd, setPrd] = useState('');
@@ -48,6 +64,23 @@ export default function Home() {
     setPrd(SAMPLE_PRD);
     setFeatureRequests(SAMPLE_FEATURE_REQUESTS);
     setFeedback(SAMPLE_FEEDBACK);
+  };
+
+  const handleLoadTryExample = () => {
+    setPrd(TRY_EXAMPLE_PRD);
+    setFeatureRequests(TRY_EXAMPLE_FEATURES);
+    setFeedback(TRY_EXAMPLE_FEEDBACK);
+  };
+
+  const handleReferenceSelect = (nodeId: string) => {
+    const targetNode = nodes.find(n => n.id === nodeId);
+    if (targetNode) {
+      setSelectedNode(targetNode);
+      const element = document.getElementById('graph-stage-section');
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
   };
 
   const runAnalysis = async () => {
@@ -105,6 +138,9 @@ export default function Home() {
       const reader = debateRes.body?.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      
+      // Collect logs locally to bypass async state update lags
+      const localDebateLogs: DebateLog[] = [];
 
       if (reader) {
         while (true) {
@@ -121,37 +157,25 @@ export default function Home() {
               const data = JSON.parse(line);
               
               if (data.type === 'start_debate') {
-                // Initialize debate log for node
-                setDebateLogs(prev => {
-                  if (prev.some(log => log.nodeId === data.nodeId)) return prev;
-                  return [...prev, { nodeId: data.nodeId, turns: [], verdict: '' }];
-                });
+                if (!localDebateLogs.some(log => log.nodeId === data.nodeId)) {
+                  localDebateLogs.push({ nodeId: data.nodeId, turns: [], verdict: '' });
+                }
+                setDebateLogs([...localDebateLogs]);
               } else if (data.type === 'thinking') {
-                // Update thinking state
                 setThinkingAgent({ nodeId: data.nodeId, persona: data.persona });
               } else if (data.type === 'turn') {
-                // Clear thinking state and append turn
                 setThinkingAgent(null);
-                setDebateLogs(prev => prev.map(log => {
-                  if (log.nodeId === data.nodeId) {
-                    return {
-                      ...log,
-                      turns: [...log.turns, data.turn]
-                    };
-                  }
-                  return log;
-                }));
+                const log = localDebateLogs.find(l => l.nodeId === data.nodeId);
+                if (log) {
+                  log.turns.push(data.turn);
+                }
+                setDebateLogs([...localDebateLogs]);
               } else if (data.type === 'verdict') {
-                // Update verdict
-                setDebateLogs(prev => prev.map(log => {
-                  if (log.nodeId === data.nodeId) {
-                    return {
-                      ...log,
-                      verdict: data.verdict
-                    };
-                  }
-                  return log;
-                }));
+                const log = localDebateLogs.find(l => l.nodeId === data.nodeId);
+                if (log) {
+                  log.verdict = data.verdict;
+                }
+                setDebateLogs([...localDebateLogs]);
               } else if (data.type === 'complete') {
                 setThinkingAgent(null);
               }
@@ -162,7 +186,21 @@ export default function Home() {
         }
       }
 
-      // Do not run step 4 yet
+      // Step 4: Synthesize
+      setActiveStep(4);
+      const synthRes = await fetch('/api/synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          graphData,
+          debateLogs: localDebateLogs,
+          originalFeatureRequests: featureRequests
+        }),
+      });
+      if (!synthRes.ok) throw new Error('Failed in Roadmap Synthesis phase');
+      const synthData = await synthRes.json();
+      setRoadmap(synthData.roadmap);
+
       setActiveStep(5); // Finished
     } catch (err: unknown) {
       console.error(err);
@@ -270,11 +308,22 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="mt-6 flex justify-end">
+          <div className="mt-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <button
+              onClick={handleLoadTryExample}
+              disabled={loading}
+              className="w-full sm:w-auto text-xs font-semibold px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white transition-all flex items-center justify-center space-x-1.5"
+            >
+              <svg className="w-4 h-4 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              </svg>
+              <span>Try SaaS Chatbot Example</span>
+            </button>
+
             <button
               onClick={runAnalysis}
               disabled={loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()}
-              className={`px-6 py-3 rounded-xl font-semibold shadow-lg transition-all flex items-center space-x-2 border border-teal-400/20 ${
+              className={`w-full sm:w-auto px-6 py-3 rounded-xl font-semibold shadow-lg transition-all flex items-center justify-center space-x-2 border border-teal-400/20 ${
                 loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()
                   ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-transparent'
                   : 'bg-gradient-to-r from-teal-500 to-emerald-400 text-slate-950 hover:from-teal-400 hover:to-emerald-300 active:scale-[0.98]'
@@ -367,7 +416,7 @@ export default function Home() {
         {showResults && (
           <div className="space-y-8 animate-fadeIn">
             {/* Stage 1 & 2: Nodes & Dependency Graph */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div id="graph-stage-section" className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               {/* Extraction list */}
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
                 <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
@@ -533,51 +582,13 @@ export default function Home() {
                 <span>Stage 4: Synthesized & Ranked Roadmap</span>
               </h3>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {roadmap.map((item) => (
-                  <div key={item.id} className="bg-slate-950 border border-slate-800/80 hover:border-slate-700/80 rounded-xl p-5 flex flex-col h-full relative overflow-hidden transition-all">
-                    {/* Rank Indicator */}
-                    <div className="absolute top-0 right-0 w-12 h-12 bg-slate-900 border-b border-l border-slate-800 flex items-center justify-center text-sm font-bold text-teal-400 font-mono">
-                      #{item.rank}
-                    </div>
-
-                    <div className="pr-10 mb-4">
-                      <h4 className="font-bold text-slate-200 text-sm">{item.title}</h4>
-                      <span className="text-[9px] font-mono text-slate-500 uppercase">{item.id}</span>
-                    </div>
-
-                    <div className="flex-1 flex flex-col justify-between space-y-4">
-                      <div>
-                        <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Strategic Rationale</p>
-                        <p className="text-xs text-slate-300 leading-relaxed">{item.rationale}</p>
-                      </div>
-
-                      <div className="space-y-2 pt-2 border-t border-slate-900">
-                        {item.sourceNodes.length > 0 && (
-                          <div className="flex items-center space-x-1.5 flex-wrap">
-                            <span className="text-[10px] text-slate-500 font-semibold uppercase">Source Nodes:</span>
-                            {item.sourceNodes.map(nodeId => (
-                              <span key={nodeId} className="text-[9px] font-mono text-slate-300 bg-slate-900 border border-slate-800 px-1.5 py-0.5 rounded">
-                                {nodeId}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                        {item.relatedDebate.length > 0 && (
-                          <div className="flex items-center space-x-1.5 flex-wrap">
-                            <span className="text-[10px] text-slate-500 font-semibold uppercase">Debates:</span>
-                            {item.relatedDebate.map(nodeId => (
-                              <span key={nodeId} className="text-[9px] font-mono text-rose-300 bg-rose-950/20 border border-rose-900/30 px-1.5 py-0.5 rounded">
-                                {nodeId}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {roadmap.length > 0 ? (
+                <RoadmapView items={roadmap} onReferenceSelect={handleReferenceSelect} />
+              ) : (
+                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
+                  Roadmap synthesis will run after the agent debates finish.
+                </div>
+              )}
             </section>
           </div>
         )}
