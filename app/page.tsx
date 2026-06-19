@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
+import DebateTranscript from '@/components/DebateTranscript';
 
 const STEPS = [
   { id: 1, name: 'Extracting Nodes', description: 'Parsing claims, assumptions, requirements, and feedback signals' },
@@ -41,6 +42,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [thinkingAgent, setThinkingAgent] = useState<{ nodeId: string, persona: 'growth' | 'eng_realist' | 'user_advocate' } | null>(null);
 
   const handleLoadSampleData = () => {
     setPrd(SAMPLE_PRD);
@@ -57,6 +59,7 @@ export default function Home() {
     setDebateLogs([]);
     setRoadmap([]);
     setSelectedNode(null);
+    setThinkingAgent(null);
 
     try {
       // Step 1: Extract
@@ -84,9 +87,83 @@ export default function Home() {
       // Log graph quality to console for verification
       console.log('Graph Output:', graphData);
 
-      // Do not run steps 3-4 yet as requested
-      setActiveStep(5); // Finished
+      // Step 3: Debate (Streaming turns)
+      setActiveStep(3);
+      const debateRes = await fetch('/api/debate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staleOrContestedNodes: graphData.nodes.filter((n: Node) => n.status === 'stale' || n.status === 'contested'),
+          allNodes: graphData.nodes,
+        }),
+      });
+
+      if (!debateRes.ok) throw new Error('Failed to start agent debate');
+      
       setShowResults(true);
+
+      const reader = debateRes.body?.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      if (reader) {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const data = JSON.parse(line);
+              
+              if (data.type === 'start_debate') {
+                // Initialize debate log for node
+                setDebateLogs(prev => {
+                  if (prev.some(log => log.nodeId === data.nodeId)) return prev;
+                  return [...prev, { nodeId: data.nodeId, turns: [], verdict: '' }];
+                });
+              } else if (data.type === 'thinking') {
+                // Update thinking state
+                setThinkingAgent({ nodeId: data.nodeId, persona: data.persona });
+              } else if (data.type === 'turn') {
+                // Clear thinking state and append turn
+                setThinkingAgent(null);
+                setDebateLogs(prev => prev.map(log => {
+                  if (log.nodeId === data.nodeId) {
+                    return {
+                      ...log,
+                      turns: [...log.turns, data.turn]
+                    };
+                  }
+                  return log;
+                }));
+              } else if (data.type === 'verdict') {
+                // Update verdict
+                setDebateLogs(prev => prev.map(log => {
+                  if (log.nodeId === data.nodeId) {
+                    return {
+                      ...log,
+                      verdict: data.verdict
+                    };
+                  }
+                  return log;
+                }));
+              } else if (data.type === 'complete') {
+                setThinkingAgent(null);
+              }
+            } catch (err) {
+              console.error('Failed to parse line:', line, err);
+            }
+          }
+        }
+      }
+
+      // Do not run step 4 yet
+      setActiveStep(5); // Finished
     } catch (err: unknown) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'An error occurred during analysis.');
@@ -114,23 +191,7 @@ export default function Home() {
     }
   };
 
-  const getPersonaBadgeColor = (persona: string) => {
-    switch (persona) {
-      case 'growth': return 'bg-sky-950 text-sky-300 border-sky-800';
-      case 'eng_realist': return 'bg-slate-800 text-slate-200 border-slate-700';
-      case 'user_advocate': return 'bg-violet-950 text-violet-300 border-violet-800';
-      default: return 'bg-slate-900 text-slate-400 border-slate-800';
-    }
-  };
 
-  const getPersonaName = (persona: string) => {
-    switch (persona) {
-      case 'growth': return 'Growth Optimist';
-      case 'eng_realist': return 'Eng Realist';
-      case 'user_advocate': return 'User Advocate';
-      default: return persona;
-    }
-  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-teal-500/30 selection:text-teal-200">
@@ -433,46 +494,36 @@ export default function Home() {
                 <span>Stage 3: 3-Agent Alignment Debate Logs</span>
               </h3>
 
-              <div className="space-y-6">
-                {debateLogs.map((log, index) => {
-                  const disputedNode = nodes.find(n => n.id === log.nodeId);
-                  return (
-                    <div key={index} className="space-y-4">
-                      <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/80 flex items-start space-x-3">
-                        <div className="w-8 h-8 rounded-lg bg-rose-950 border border-rose-800 flex items-center justify-center flex-shrink-0 text-rose-300 font-mono text-xs">
-                          !
-                        </div>
-                        <div>
-                          <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Debate Topic: Contested Item ({log.nodeId})</p>
-                          <p className="text-sm text-slate-200 mt-1">{disputedNode?.text}</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-4 pl-4 border-l border-slate-800">
-                        {log.turns.map((turn, turnIdx) => (
-                          <div key={turnIdx} className="bg-slate-950 border border-slate-900 rounded-xl p-4 space-y-2">
-                            <div className="flex items-center justify-between flex-wrap gap-2">
-                              <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${getPersonaBadgeColor(turn.persona)}`}>
-                                {getPersonaName(turn.persona)}
-                              </span>
-                              <span className="text-[10px] text-slate-500 font-mono">
-                                Round {turn.round} {turn.respondingTo ? `(Responding to ${getPersonaName(turn.respondingTo)})` : ''}
-                              </span>
-                            </div>
-                            <p className="text-sm text-slate-300 italic leading-relaxed">&ldquo;{turn.text}&rdquo;</p>
+              {debateLogs.length > 0 ? (
+                <div className="space-y-6">
+                  {debateLogs.map((log, index) => {
+                    const disputedNode = nodes.find(n => n.id === log.nodeId);
+                    return (
+                      <div key={index} className="space-y-4">
+                        <div className="p-4 rounded-xl border border-slate-800 bg-slate-950/80 flex items-start space-x-3">
+                          <div className="w-8 h-8 rounded-lg bg-rose-950/30 border border-rose-800/80 flex items-center justify-center flex-shrink-0 text-rose-300 font-mono text-xs">
+                            !
                           </div>
-                        ))}
-                      </div>
+                          <div>
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Debate Topic: Contested Item ({log.nodeId})</p>
+                            <p className="text-sm text-slate-200 mt-1">{disputedNode?.text}</p>
+                          </div>
+                        </div>
 
-                      {/* Debate Verdict */}
-                      <div className="p-4 rounded-xl border border-teal-800/40 bg-teal-950/20 text-teal-300 text-sm">
-                        <p className="text-xs font-bold uppercase tracking-wider text-teal-400 mb-1">Debate Verdict</p>
-                        <p>{log.verdict}</p>
+                        <DebateTranscript
+                          turns={log.turns}
+                          verdict={log.verdict}
+                          isThinking={thinkingAgent?.nodeId === log.nodeId ? thinkingAgent.persona : null}
+                        />
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
+                  No stale or contested claims or assumptions detected in the dependency graph. Agent debate is not required.
+                </div>
+              )}
             </section>
 
             {/* Stage 4: Synthesized Roadmap */}
