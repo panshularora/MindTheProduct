@@ -86,7 +86,7 @@ export default function Home() {
   const runAnalysis = async () => {
     setLoading(true);
     setError(null);
-    setShowResults(false);
+    setShowResults(true);
     setNodes([]);
     setGraph(null);
     setDebateLogs([]);
@@ -132,8 +132,6 @@ export default function Home() {
       });
 
       if (!debateRes.ok) throw new Error('Failed to start agent debate');
-      
-      setShowResults(true);
 
       const reader = debateRes.body?.getReader();
       const decoder = new TextDecoder();
@@ -246,7 +244,7 @@ export default function Home() {
               <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
                 Product Council AI
               </h1>
-              <p className="text-xs text-slate-400">4-Stage AI Pipeline for Strategic Feature Alignment</p>
+              <p className="text-xs text-slate-400">4-Stage AI Alignment Engine: Resolving PRD Contradictions, Debating Tradeoffs, and Synthesizing a Verified Roadmap</p>
             </div>
           </div>
           <button
@@ -414,64 +412,79 @@ export default function Home() {
 
         {/* Results Sections */}
         {showResults && (
-          <div className="space-y-8 animate-fadeIn">
+          <div className="space-y-12 animate-fadeIn">
             {/* Stage 1 & 2: Nodes & Dependency Graph */}
             <div id="graph-stage-section" className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               {/* Extraction list */}
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
                 <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
-                  <span className="w-2 h-2 rounded-full bg-teal-400" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-pulse" />
                   <span>Stage 1: Extracted Structured Nodes</span>
                 </h3>
                 <div className="overflow-y-auto pr-2 space-y-4 flex-1">
-                  {nodes.map((node) => (
-                    <div
-                      key={node.id}
-                      onClick={() => setSelectedNode(node)}
-                      className={`p-4 rounded-xl border transition-all cursor-pointer ${
-                        selectedNode?.id === node.id
-                          ? 'border-teal-400 bg-slate-900 shadow-md shadow-teal-950/20'
-                          : node.status === 'contested'
-                          ? 'bg-rose-950/20 border-rose-900/40 hover:border-rose-800'
-                          : node.status === 'stale'
-                          ? 'bg-amber-950/20 border-amber-900/40 hover:border-amber-800'
-                          : 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                        <div className="flex items-center space-x-2">
-                          <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
-                            {node.id}
-                          </span>
-                          <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded ${getSourceBadgeColor(node.source)}`}>
-                            {node.source}
-                          </span>
-                          <span className="text-xs text-slate-400 font-mono">
-                            {(node.confidence * 100).toFixed(0)}% confidence
+                  {nodes.length > 0 ? (
+                    nodes.map((node) => (
+                      <div
+                        key={node.id}
+                        onClick={() => setSelectedNode(node)}
+                        className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                          selectedNode?.id === node.id
+                            ? 'border-teal-400 bg-slate-900 shadow-md shadow-teal-950/20'
+                            : node.status === 'contested'
+                            ? 'bg-rose-950/20 border-rose-900/40 hover:border-rose-800'
+                            : node.status === 'stale'
+                            ? 'bg-amber-950/20 border-amber-900/40 hover:border-amber-800'
+                            : 'bg-slate-950/60 border-slate-800/80 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
+                              {node.id}
+                            </span>
+                            <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded ${getSourceBadgeColor(node.source)}`}>
+                              {node.source}
+                            </span>
+                            <span className="text-xs text-slate-400 font-mono">
+                              {(node.confidence * 100).toFixed(0)}% confidence
+                            </span>
+                          </div>
+                          <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded-full ${getStatusBadgeColor(node.status)}`}>
+                            {node.status}
                           </span>
                         </div>
-                        <span className={`text-[10px] font-bold uppercase tracking-wide border px-2 py-0.5 rounded-full ${getStatusBadgeColor(node.status)}`}>
-                          {node.status}
-                        </span>
+                        <p className="text-sm text-slate-200">{node.text}</p>
+                        <div className="mt-2 text-[10px] font-mono text-slate-400">
+                          Type: <span className="text-slate-300 font-semibold">{node.type}</span>
+                          {node.dependsOn.length > 0 && (
+                            <span className="ml-2">
+                              Depends on: <span className="text-teal-400">{node.dependsOn.join(', ')}</span>
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <p className="text-sm text-slate-200">{node.text}</p>
-                      <div className="mt-2 text-[10px] font-mono text-slate-400">
-                        Type: <span className="text-slate-300 font-semibold">{node.type}</span>
-                        {node.dependsOn.length > 0 && (
-                          <span className="ml-2">
-                            Depends on: <span className="text-teal-400">{node.dependsOn.join(', ')}</span>
-                          </span>
-                        )}
-                      </div>
+                    ))
+                  ) : activeStep === 1 ? (
+                    <div className="h-full flex flex-col items-center justify-center space-y-4 p-8 text-center">
+                      <svg className="animate-spin h-8 w-8 text-teal-400" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      <p className="text-sm text-slate-300 font-medium">Extracting structured claims, assumptions, and signals...</p>
+                      <p className="text-xs text-slate-500 max-w-xs leading-relaxed">Claude is reading the inputs to identify atomic product council nodes.</p>
                     </div>
-                  ))}
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-slate-500 text-sm p-8 text-center italic">
+                      Waiting to start extraction...
+                    </div>
+                  )}
                 </div>
               </div>
 
               {/* Dependency Graph visual panel */}
               <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
                 <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span>Stage 2: Dependency Graph & Conflicts</span>
                 </h3>
                 <div className="flex-1 flex flex-col space-y-4 min-h-0">
@@ -484,9 +497,9 @@ export default function Home() {
                       />
                       
                       {/* Node Details Sub-panel */}
-                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex-1 overflow-y-auto">
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex-1 overflow-y-auto font-sans">
                         {selectedNode ? (
-                          <div className="space-y-3">
+                          <div className="space-y-3 text-left">
                             <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
                               <div className="flex items-center space-x-2">
                                 <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded font-bold">
@@ -505,7 +518,7 @@ export default function Home() {
                             </div>
                             <div>
                               <span className="text-slate-400 font-bold block text-[10px] uppercase mb-1">Text Summary</span>
-                              <p className="text-sm text-slate-200 leading-relaxed font-sans">{selectedNode.text}</p>
+                              <p className="text-sm text-slate-200 leading-relaxed">{selectedNode.text}</p>
                             </div>
                             <div className="grid grid-cols-2 gap-4 pt-1 text-xs">
                               <div>
@@ -527,24 +540,38 @@ export default function Home() {
                         )}
                       </div>
                     </>
+                  ) : activeStep === 2 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-slate-400 text-sm space-y-3 p-8 text-center">
+                      <svg className="animate-spin h-8 w-8 text-emerald-400" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      <span className="font-mono text-xs">Building dependency matrix & conflict edges...</span>
+                    </div>
                   ) : (
-                    <div className="h-full flex items-center justify-center text-slate-500 text-sm">
-                      Run the pipeline analysis to build the dependency graph.
+                    <div className="h-full flex items-center justify-center text-slate-500 text-sm p-8 text-center italic">
+                      {activeStep > 2 ? 'No graph data was generated.' : 'Waiting for node extraction to complete...'}
                     </div>
                   )}
                 </div>
               </div>
             </div>
 
+            {/* Visual connector */}
+            <div className="flex flex-col items-center justify-center my-6">
+              <div className="w-0.5 h-10 bg-gradient-to-b from-emerald-500 to-violet-500" />
+              <div className="text-[10px] font-mono text-slate-500 tracking-widest uppercase mt-1">Conflict Detection & Alignment Debate</div>
+            </div>
+
             {/* Stage 3: Sequential Agent Debate */}
             <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
               <h3 className="text-base font-bold text-slate-200 flex items-center space-x-2">
-                <span className="w-2 h-2 rounded-full bg-violet-400" />
+                <span className="w-2.5 h-2.5 rounded-full bg-violet-400 animate-pulse" />
                 <span>Stage 3: 3-Agent Alignment Debate Logs</span>
               </h3>
 
               {debateLogs.length > 0 ? (
-                <div className="space-y-6">
+                <div className="space-y-6 animate-fadeIn">
                   {debateLogs.map((log, index) => {
                     const disputedNode = nodes.find(n => n.id === log.nodeId);
                     return (
@@ -553,7 +580,7 @@ export default function Home() {
                           <div className="w-8 h-8 rounded-lg bg-rose-950/30 border border-rose-800/80 flex items-center justify-center flex-shrink-0 text-rose-300 font-mono text-xs">
                             !
                           </div>
-                          <div>
+                          <div className="text-left">
                             <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Debate Topic: Contested Item ({log.nodeId})</p>
                             <p className="text-sm text-slate-200 mt-1">{disputedNode?.text}</p>
                           </div>
@@ -568,25 +595,53 @@ export default function Home() {
                     );
                   })}
                 </div>
-              ) : (
+              ) : activeStep === 3 || thinkingAgent !== null ? (
+                <div className="p-12 border border-slate-800 bg-slate-950/40 rounded-xl text-center flex flex-col items-center justify-center space-y-4">
+                  <svg className="animate-spin h-8 w-8 text-violet-400" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <p className="text-slate-300 text-sm">Growth vs. Engineering vs. UX Persona debate session in progress...</p>
+                  <p className="text-xs text-slate-500 max-w-xs leading-relaxed font-sans">Claude agents are sequentially arguing alignment on contested/stale items.</p>
+                </div>
+              ) : activeStep > 3 ? (
                 <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
                   No stale or contested claims or assumptions detected in the dependency graph. Agent debate is not required.
+                </div>
+              ) : (
+                <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
+                  Waiting for dependency graph analysis to detect contested items...
                 </div>
               )}
             </section>
 
+            {/* Visual connector */}
+            <div className="flex flex-col items-center justify-center my-6">
+              <div className="w-0.5 h-10 bg-gradient-to-b from-violet-500 to-blue-500" />
+              <div className="text-[10px] font-mono text-slate-500 tracking-widest uppercase mt-1">Strategic Roadmap Synthesis</div>
+            </div>
+
             {/* Stage 4: Synthesized Roadmap */}
             <section className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
               <h3 className="text-base font-bold text-slate-200 flex items-center space-x-2">
-                <span className="w-2 h-2 rounded-full bg-blue-400" />
+                <span className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
                 <span>Stage 4: Synthesized & Ranked Roadmap</span>
               </h3>
 
               {roadmap.length > 0 ? (
                 <RoadmapView items={roadmap} onReferenceSelect={handleReferenceSelect} />
+              ) : activeStep === 4 ? (
+                <div className="p-12 border border-slate-800 bg-slate-950/40 rounded-xl text-center flex flex-col items-center justify-center space-y-4">
+                  <svg className="animate-spin h-8 w-8 text-blue-400" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <p className="text-slate-300 text-sm">Synthesizing final prioritized product roadmap...</p>
+                  <p className="text-xs text-slate-500 max-w-xs leading-relaxed font-sans">Claude is reviewing the graph connections, original inputs, and debate verdicts to generate a ranked features list.</p>
+                </div>
               ) : (
                 <div className="p-8 border border-slate-800 bg-slate-950/40 rounded-xl text-center text-slate-500 italic text-sm">
-                  Roadmap synthesis will run after the agent debates finish.
+                  Waiting for agent debate and verdicts to complete...
                 </div>
               )}
             </section>

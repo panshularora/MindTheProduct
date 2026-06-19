@@ -26,6 +26,7 @@ export async function POST(request: Request) {
 
     const anthropic = new Anthropic({
       apiKey,
+      timeout: 25000, // 25 seconds timeout
     });
 
     const prompt = `You are a product reasoning agent specializing in dependency graph mapping and conflict resolution.
@@ -73,40 +74,58 @@ You must respond ONLY with a valid JSON object matching this exact shape:
 
 Ensure all nodes from the input are returned in the output with their status and dependsOn updated. Do not introduce any text other than the JSON object. Do not include markdown code blocks.`;
 
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      temperature: 0,
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    });
+    let text = '';
+    let parsed: GraphData | null = null;
+    let attempts = 0;
+    const maxAttempts = 2;
 
-    const responseContent = message.content[0];
-    if (responseContent.type !== 'text') {
-      throw new Error('Anthropic API returned a non-text response.');
-    }
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        const message = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          temperature: 0,
+          messages: [
+            {
+              role: 'user',
+              content: attempts === 1
+                ? prompt
+                : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+            }
+          ]
+        });
 
-    let text = responseContent.text.trim();
+        const responseContent = message.content[0];
+        if (responseContent.type !== 'text') {
+          throw new Error('Anthropic API returned a non-text response.');
+        }
 
-    // Strip markdown code fences if present
-    if (text.startsWith('```')) {
-      text = text.replace(/^```[a-zA-Z]*\n?/, '');
-      text = text.replace(/\n?```$/, '');
-      text = text.trim();
-    }
+        text = responseContent.text.trim();
 
-    let parsed: GraphData;
-    try {
-      parsed = JSON.parse(text);
-    } catch (parseError: unknown) {
-      console.error('Failed to parse Claude JSON response. Raw text:', text);
-      const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
-      throw new Error('Claude response was not valid JSON: ' + parseMsg);
+        // Strip markdown code fences if present
+        if (text.startsWith('```')) {
+          text = text.replace(/^```[a-zA-Z]*\n?/, '');
+          text = text.replace(/\n?```$/, '');
+          text = text.trim();
+        }
+
+        parsed = JSON.parse(text);
+        if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+          throw new Error('Invalid JSON structure: missing nodes or edges array.');
+        }
+        break; // Parse and check succeeded! Exit loop.
+      } catch (parseError: unknown) {
+        console.warn(`Graph API JSON parsing attempt ${attempts} failed.`, parseError);
+        if (attempts >= maxAttempts) {
+          const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
+          throw new Error('Claude response was not valid JSON: ' + parseMsg);
+        }
+      }
     }
 
     if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-      throw new Error('Invalid JSON structure: missing nodes or edges array.');
+      throw new Error('Failed to generate dependency graph because of a malformed AI response.');
     }
 
     // Validate nodes format

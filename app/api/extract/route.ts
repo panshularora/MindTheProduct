@@ -26,6 +26,7 @@ export async function POST(request: Request) {
 
     const anthropic = new Anthropic({
       apiKey,
+      timeout: 25000, // 25 seconds timeout
     });
 
     const prompt = `You are a product reasoning agent. Your task is to extract structured, atomic nodes representing the core claims, assumptions, requirements, and feedback signals from three provided text sources.
@@ -79,40 +80,58 @@ You must return ONLY a valid JSON object matching this exact shape:
 
 Do not include any surrounding conversational text, markdown code blocks, or preamble. Return ONLY the JSON object.`;
 
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      temperature: 0,
-      messages: [
-        { role: 'user', content: prompt }
-      ]
-    });
+    let text = '';
+    let parsed: { nodes: Node[] } | null = null;
+    let attempts = 0;
+    const maxAttempts = 2;
 
-    const responseContent = message.content[0];
-    if (responseContent.type !== 'text') {
-      throw new Error('Anthropic API returned a non-text response.');
-    }
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        const message = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          temperature: 0,
+          messages: [
+            {
+              role: 'user',
+              content: attempts === 1
+                ? prompt
+                : `${prompt}\n\nIMPORTANT: Your previous response failed to parse as valid JSON. Please ensure your response is absolutely valid JSON matching the schema, with no leading or trailing text, markdown formatting, or preamble.`
+            }
+          ]
+        });
 
-    let text = responseContent.text.trim();
+        const responseContent = message.content[0];
+        if (responseContent.type !== 'text') {
+          throw new Error('Anthropic API returned a non-text response.');
+        }
 
-    // Strip markdown code fences if present
-    if (text.startsWith('```')) {
-      text = text.replace(/^```[a-zA-Z]*\n?/, '');
-      text = text.replace(/\n?```$/, '');
-      text = text.trim();
-    }
+        text = responseContent.text.trim();
 
-    let parsed: { nodes: Node[] };
-    try {
-      parsed = JSON.parse(text);
-    } catch (parseError: unknown) {
-      console.error('Failed to parse Claude JSON response. Raw text:', text);
-      const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
-      throw new Error('Claude response was not valid JSON: ' + parseMsg);
+        // Strip markdown code fences if present
+        if (text.startsWith('```')) {
+          text = text.replace(/^```[a-zA-Z]*\n?/, '');
+          text = text.replace(/\n?```$/, '');
+          text = text.trim();
+        }
+
+        parsed = JSON.parse(text);
+        if (!parsed || !Array.isArray(parsed.nodes)) {
+          throw new Error('Invalid JSON structure: missing nodes array.');
+        }
+        break; // Parse and check succeeded! Exit loop.
+      } catch (parseError: unknown) {
+        console.warn(`Extraction API JSON parsing attempt ${attempts} failed.`, parseError);
+        if (attempts >= maxAttempts) {
+          const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
+          throw new Error('Claude response was not valid JSON: ' + parseMsg);
+        }
+      }
     }
 
     if (!parsed || !Array.isArray(parsed.nodes)) {
-      throw new Error('Invalid JSON structure: missing nodes array.');
+      throw new Error('Failed to extract product nodes because of a malformed AI response.');
     }
 
     // Validate nodes format just to be safe

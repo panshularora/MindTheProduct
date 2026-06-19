@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { DebateTurn } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const encoder = new TextEncoder();
@@ -26,7 +27,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const anthropic = new Anthropic({ apiKey });
+    const anthropic = new Anthropic({
+      apiKey,
+      timeout: 25000, // 25 seconds timeout per call
+    });
 
     // Filter stale/contested nodes if not passed explicitly
     const targetNodes = (staleOrContestedNodes && staleOrContestedNodes.length > 0)
