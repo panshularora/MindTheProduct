@@ -51,19 +51,17 @@ Task Instructions:
   * Populate "sourceNodes" with an array of node IDs (e.g. feedback signals, requirements, or claims) that support or inform this item.
 
 Output Format:
-Return ONLY a valid JSON object matching this exact shape:
-{
-  "roadmap": [
-    {
-      "id": "r1",
-      "title": "Roadmap item title",
-      "rank": 1,
-      "rationale": "Detailed rationale text summarizing why this is priority #1, referencing the debate verdict for node-X and user feedback signals node-Y...",
-      "relatedDebate": ["node-X"],
-      "sourceNodes": ["node-Y", "node-Z"]
-    }
-  ]
-}
+Return ONLY a valid JSON array matching this exact shape:
+[
+  {
+    "id": "r1",
+    "title": "Roadmap item title",
+    "rank": 1,
+    "rationale": "Detailed rationale text summarizing why this is priority #1, referencing the debate verdict for node-X and user feedback signals node-Y...",
+    "relatedDebate": ["node-X"],
+    "sourceNodes": ["node-Y", "node-Z"]
+  }
+]
 
 Do not include conversational text, preambles, or markdown formatting blocks.`;
 
@@ -88,7 +86,7 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
       text = text.trim();
     }
 
-    let parsed: { roadmap: RoadmapItem[] };
+    let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch (parseError: unknown) {
@@ -97,12 +95,18 @@ Do not include conversational text, preambles, or markdown formatting blocks.`;
       throw new Error('Claude response was not valid JSON: ' + parseMsg);
     }
 
-    if (!parsed || !Array.isArray(parsed.roadmap)) {
-      throw new Error('Invalid JSON structure: missing roadmap array.');
+    let itemsArray: unknown[] = [];
+    if (Array.isArray(parsed)) {
+      itemsArray = parsed;
+    } else if (parsed && typeof parsed === 'object' && 'roadmap' in parsed && Array.isArray((parsed as { roadmap: unknown }).roadmap)) {
+      itemsArray = (parsed as { roadmap: unknown[] }).roadmap;
+    } else {
+      throw new Error('Invalid JSON structure: expected a JSON array or an object containing a roadmap array.');
     }
 
     // Validate roadmap items
-    const validatedRoadmap: RoadmapItem[] = parsed.roadmap.map((item: Partial<RoadmapItem>, idx: number) => {
+    const validatedRoadmap: RoadmapItem[] = itemsArray.map((rawItem: unknown, idx: number) => {
+      const item = (rawItem || {}) as Partial<RoadmapItem>;
       return {
         id: item.id || `r${idx + 1}`,
         title: item.title || 'Roadmap Item',
