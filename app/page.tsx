@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem } from '@/lib/types';
+import DependencyGraph from '@/components/DependencyGraph';
 
 const STEPS = [
   { id: 1, name: 'Extracting Nodes', description: 'Parsing claims, assumptions, requirements, and feedback signals' },
@@ -39,6 +40,7 @@ export default function Home() {
   const [roadmap, setRoadmap] = useState<RoadmapItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
+  const [selectedNode, setSelectedNode] = useState<Node | null>(null);
 
   const handleLoadSampleData = () => {
     setPrd(SAMPLE_PRD);
@@ -54,6 +56,7 @@ export default function Home() {
     setGraph(null);
     setDebateLogs([]);
     setRoadmap([]);
+    setSelectedNode(null);
 
     try {
       // Step 1: Extract
@@ -65,13 +68,23 @@ export default function Home() {
       });
       if (!extractRes.ok) throw new Error('Failed in Node Extraction phase');
       const extractData = await extractRes.json();
-      
-      // Log extraction quality to the console
-      console.log('Extraction Output:', extractData.nodes);
-      
       setNodes(extractData.nodes);
 
-      // Do not run steps 2-4 yet as requested
+      // Step 2: Graph
+      setActiveStep(2);
+      const graphRes = await fetch('/api/graph', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodes: extractData.nodes }),
+      });
+      if (!graphRes.ok) throw new Error('Failed in Graph Construction phase');
+      const graphData = await graphRes.json();
+      setGraph(graphData);
+      
+      // Log graph quality to console for verification
+      console.log('Graph Output:', graphData);
+
+      // Do not run steps 3-4 yet as requested
       setActiveStep(5); // Finished
       setShowResults(true);
     } catch (err: unknown) {
@@ -295,7 +308,7 @@ export default function Home() {
             {/* Stage 1 & 2: Nodes & Dependency Graph */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               {/* Extraction list */}
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[500px]">
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
                 <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
                   <span className="w-2 h-2 rounded-full bg-teal-400" />
                   <span>Stage 1: Extracted Structured Nodes</span>
@@ -304,8 +317,11 @@ export default function Home() {
                   {nodes.map((node) => (
                     <div
                       key={node.id}
-                      className={`p-4 rounded-xl border transition-all ${
-                        node.status === 'contested'
+                      onClick={() => setSelectedNode(node)}
+                      className={`p-4 rounded-xl border transition-all cursor-pointer ${
+                        selectedNode?.id === node.id
+                          ? 'border-teal-400 bg-slate-900 shadow-md shadow-teal-950/20'
+                          : node.status === 'contested'
                           ? 'bg-rose-950/20 border-rose-900/40 hover:border-rose-800'
                           : node.status === 'stale'
                           ? 'bg-amber-950/20 border-amber-900/40 hover:border-amber-800'
@@ -342,68 +358,68 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Dependency Graph visual list */}
-              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[500px]">
+              {/* Dependency Graph visual panel */}
+              <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-[650px]">
                 <h3 className="text-base font-bold text-slate-200 mb-4 flex items-center space-x-2">
                   <span className="w-2 h-2 rounded-full bg-emerald-400" />
                   <span>Stage 2: Dependency Graph & Conflicts</span>
                 </h3>
-                <div className="overflow-y-auto pr-2 space-y-4 flex-1">
-                  {graph?.edges && graph.edges.length > 0 ? (
-                    <div className="space-y-4">
-                      <div className="text-xs text-slate-400 bg-slate-950 p-3 rounded-lg border border-slate-800 leading-relaxed">
-                        The pipeline identified requirements linked to assumptions, mapping potential contradictions.
-                      </div>
-                      <div className="space-y-3">
-                        {graph.edges.map((edge, index) => {
-                          const fromNode = nodes.find(n => n.id === edge.from);
-                          const toNode = nodes.find(n => n.id === edge.to);
-
-                          return (
-                            <div key={index} className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-2 relative overflow-hidden">
-                              {/* Highlight red-ish if a contested node is involved */}
-                              {(fromNode?.status === 'contested' || toNode?.status === 'contested') && (
-                                <div className="absolute left-0 top-0 bottom-0 w-1 bg-rose-500" />
-                              )}
+                <div className="flex-1 flex flex-col space-y-4 min-h-0">
+                  {graph ? (
+                    <>
+                      <DependencyGraph
+                        data={graph}
+                        onNodeSelect={setSelectedNode}
+                        selectedNode={selectedNode}
+                      />
+                      
+                      {/* Node Details Sub-panel */}
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex-1 overflow-y-auto">
+                        {selectedNode ? (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between border-b border-slate-800 pb-2 flex-wrap gap-2">
                               <div className="flex items-center space-x-2">
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${getSourceBadgeColor(fromNode?.source || '')}`}>
-                                  {fromNode?.source.toUpperCase()}
+                                <span className="text-xs font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded font-bold">
+                                  {selectedNode.id}
                                 </span>
-                                <span className="text-xs font-mono text-slate-300">{edge.from}</span>
-                                <span className="text-slate-500">→</span>
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${getSourceBadgeColor(toNode?.source || '')}`}>
-                                  {toNode?.source.toUpperCase()}
+                                <span className={`text-[10px] font-bold uppercase border px-2 py-0.5 rounded ${getSourceBadgeColor(selectedNode.source)}`}>
+                                  {selectedNode.source}
                                 </span>
-                                <span className="text-xs font-mono text-slate-300">{edge.to}</span>
+                                <span className="text-xs text-slate-400">
+                                  {(selectedNode.confidence * 100).toFixed(0)}% confidence
+                                </span>
                               </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs pt-1">
-                                <div className="p-2 rounded bg-slate-900/60 border border-slate-800/40">
-                                  <span className="text-slate-400 font-bold block text-[10px] uppercase mb-1">Source Node ({edge.from})</span>
-                                  <span className="text-slate-300 line-clamp-2">{fromNode?.text}</span>
-                                </div>
-                                <div className="p-2 rounded bg-slate-900/60 border border-slate-800/40">
-                                  <span className="text-slate-400 font-bold block text-[10px] uppercase mb-1">Target Node ({edge.to})</span>
-                                  <span className="text-slate-300 line-clamp-2">{toNode?.text}</span>
-                                </div>
+                              <span className={`text-[10px] font-bold uppercase border px-2 py-0.5 rounded-full ${getStatusBadgeColor(selectedNode.status)}`}>
+                                {selectedNode.status.toUpperCase()}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 font-bold block text-[10px] uppercase mb-1">Text Summary</span>
+                              <p className="text-sm text-slate-200 leading-relaxed font-sans">{selectedNode.text}</p>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4 pt-1 text-xs">
+                              <div>
+                                <span className="text-slate-500 font-bold block text-[10px] uppercase">Node Type</span>
+                                <span className="text-slate-300 font-semibold">{selectedNode.type}</span>
                               </div>
-                              <div className="mt-1 flex items-center space-x-2 text-[10px]">
-                                <span className="text-slate-400">Impact:</span>
-                                {toNode?.status === 'stale' ? (
-                                  <span className="text-amber-400 font-medium">Target node marked STALE due to dependency resolution.</span>
-                                ) : fromNode?.status === 'contested' ? (
-                                  <span className="text-rose-400 font-medium">Contested Node triggers active agent review.</span>
-                                ) : (
-                                  <span className="text-slate-400">Normal Dependency</span>
-                                )}
+                              <div>
+                                <span className="text-slate-500 font-bold block text-[10px] uppercase">Depends On</span>
+                                <span className="text-slate-300 font-semibold font-mono">
+                                  {selectedNode.dependsOn.length > 0 ? selectedNode.dependsOn.join(', ') : 'None'}
+                                </span>
                               </div>
                             </div>
-                          );
-                        })}
+                          </div>
+                        ) : (
+                          <div className="h-full flex items-center justify-center text-slate-500 text-xs italic text-center p-4">
+                            Click on any node in the graph or the list to inspect its properties and conflicts.
+                          </div>
+                        )}
                       </div>
-                    </div>
+                    </>
                   ) : (
                     <div className="h-full flex items-center justify-center text-slate-500 text-sm">
-                      No dependency links resolved.
+                      Run the pipeline analysis to build the dependency graph.
                     </div>
                   )}
                 </div>

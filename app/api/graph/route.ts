@@ -1,86 +1,155 @@
 import { NextResponse } from 'next/server';
-import { GraphData, Node } from '@/lib/types';
+import Anthropic from '@anthropic-ai/sdk';
+import { Node, GraphData } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  let nodes: Node[] = [];
   try {
     const body = await request.json();
-    nodes = body.nodes || [];
-  } catch {
-    // Ignore
+    const { nodes } = body;
+
+    if (!nodes || !Array.isArray(nodes)) {
+      return NextResponse.json(
+        { error: 'Missing required input: nodes array must be provided.' },
+        { status: 400 }
+      );
+    }
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'Anthropic API key is not configured on the server. Please check your env configuration.' },
+        { status: 500 }
+      );
+    }
+
+    const anthropic = new Anthropic({
+      apiKey,
+    });
+
+    const prompt = `You are a product reasoning agent specializing in dependency graph mapping and conflict resolution.
+You will be provided with an array of product nodes (claims, assumptions, requirements, and feedback signals).
+
+Your task is to analyze these nodes holistically to:
+1. Identify dependency relationships ("dependsOn"):
+   - Decide which requirements depend on which assumptions or claims.
+   - Decide which assumptions depend on which claims.
+   - Populate the "dependsOn" array of each node with the parent node ID(s) it depends on.
+2. Evaluate feedback contradictions:
+   - Check if any "feedback_signal" node (source = 'feedback') contradicts, undermines, or opposes a node sourced from 'prd' or 'feature_request'.
+   - Classify the "status" of each node:
+     * 'stale': The node is directly contradicted, invalidated, or rejected by user feedback (e.g. feedback shows users explicitly dislike or do not want it).
+     * 'contested': The feedback and PRD/feature request disagree, but neither is clearly incorrect (representing a tension, trade-off, or differing views).
+     * 'fresh': The node is not contradicted or undermined by any feedback signals.
+3. Build the flattened "edges" list representing dependency links:
+   - For every dependency link (where node B depends on node A), create an edge object: { "from": "A", "to": "B" }. 
+   - Note: Edges must only represent the "dependsOn" links.
+
+Here is the input array of nodes:
+${JSON.stringify(nodes, null, 2)}
+
+Output Format:
+You must respond ONLY with a valid JSON object matching this exact shape:
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "type": "claim",
+      "text": "...",
+      "source": "prd",
+      "confidence": 0.9,
+      "dependsOn": ["n2"],
+      "status": "fresh"
+    }
+  ],
+  "edges": [
+    {
+      "from": "n2",
+      "to": "n1"
+    }
+  ]
+}
+
+Ensure all nodes from the input are returned in the output with their status and dependsOn updated. Do not introduce any text other than the JSON object. Do not include markdown code blocks.`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4000,
+      temperature: 0,
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    });
+
+    const responseContent = message.content[0];
+    if (responseContent.type !== 'text') {
+      throw new Error('Anthropic API returned a non-text response.');
+    }
+
+    let text = responseContent.text.trim();
+
+    // Strip markdown code fences if present
+    if (text.startsWith('```')) {
+      text = text.replace(/^```[a-zA-Z]*\n?/, '');
+      text = text.replace(/\n?```$/, '');
+      text = text.trim();
+    }
+
+    let parsed: GraphData;
+    try {
+      parsed = JSON.parse(text);
+    } catch (parseError: unknown) {
+      console.error('Failed to parse Claude JSON response. Raw text:', text);
+      const parseMsg = parseError instanceof Error ? parseError.message : String(parseError);
+      throw new Error('Claude response was not valid JSON: ' + parseMsg);
+    }
+
+    if (!parsed || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
+      throw new Error('Invalid JSON structure: missing nodes or edges array.');
+    }
+
+    // Validate nodes format
+    const validatedNodes: Node[] = parsed.nodes.map((node: Partial<Node>, idx: number) => {
+      const type = (node.type && ['claim', 'assumption', 'requirement', 'feedback_signal'].includes(node.type))
+        ? (node.type as 'claim' | 'assumption' | 'requirement' | 'feedback_signal')
+        : 'claim';
+      const source = (node.source && ['prd', 'feature_request', 'feedback'].includes(node.source))
+        ? (node.source as 'prd' | 'feature_request' | 'feedback')
+        : 'prd';
+      const status = (node.status && ['fresh', 'stale', 'contested'].includes(node.status))
+        ? (node.status as 'fresh' | 'stale' | 'contested')
+        : 'fresh';
+
+      return {
+        id: node.id || `n${idx + 1}`,
+        type,
+        text: node.text || '',
+        source,
+        confidence: typeof node.confidence === 'number' ? node.confidence : 1.0,
+        dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
+        status
+      } as Node;
+    });
+
+    // Validate edges format
+    const validatedEdges = parsed.edges.map((edge: Partial<{ from: string; to: string }>) => {
+      return {
+        from: String(edge.from || ''),
+        to: String(edge.to || '')
+      };
+    }).filter(edge => edge.from && edge.to);
+
+    return NextResponse.json({
+      nodes: validatedNodes,
+      edges: validatedEdges
+    });
+  } catch (error: unknown) {
+    console.error('Graph API error:', error);
+    const errMsg = error instanceof Error ? error.message : 'An error occurred during graph analysis.';
+    return NextResponse.json(
+      { error: errMsg },
+      { status: 500 }
+    );
   }
-
-  // Artificial 1-second delay
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-
-  const baseNodes: Node[] = nodes.length > 0 ? nodes : [
-    {
-      id: 'node-1',
-      type: 'claim',
-      text: 'Collaborative editing increases user engagement by 40%.',
-      source: 'prd',
-      confidence: 0.85,
-      dependsOn: [],
-      status: 'fresh',
-    },
-    {
-      id: 'node-2',
-      type: 'assumption',
-      text: 'Users want real-time cursors for all document types.',
-      source: 'prd',
-      confidence: 0.7,
-      dependsOn: [],
-      status: 'fresh',
-    },
-    {
-      id: 'node-3',
-      type: 'requirement',
-      text: 'Build collaborative editor component using WebSockets.',
-      source: 'feature_request',
-      confidence: 0.9,
-      dependsOn: ['node-2'],
-      status: 'fresh',
-    },
-    {
-      id: 'node-4',
-      type: 'feedback_signal',
-      text: 'Real-time cursors are annoying and clutter the UI; we prefer comment threads.',
-      source: 'feedback',
-      confidence: 0.95,
-      dependsOn: [],
-      status: 'fresh',
-    },
-    {
-      id: 'node-5',
-      type: 'feedback_signal',
-      text: 'I need a way to invite external reviewers to edit documents.',
-      source: 'feedback',
-      confidence: 0.8,
-      dependsOn: [],
-      status: 'fresh',
-    },
-  ];
-
-  // Update statuses to contested or stale based on dependency logic
-  const updatedNodes = baseNodes.map((node) => {
-    if (node.id === 'node-2') {
-      return { ...node, status: 'contested' as const };
-    }
-    if (node.id === 'node-3') {
-      return { ...node, status: 'stale' as const };
-    }
-    return node;
-  });
-
-  const mockGraph: GraphData = {
-    nodes: updatedNodes,
-    edges: [
-      { from: 'node-2', to: 'node-3' },
-      { from: 'node-4', to: 'node-2' }, // Feedback contests the assumption
-    ],
-  };
-
-  return NextResponse.json(mockGraph);
 }
