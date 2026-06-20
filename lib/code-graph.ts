@@ -108,7 +108,7 @@ export function buildDependencyGraphAndConflicts(
   packageJson: ParsedPackageJson,
   envExampleContent: string | null,
   targetPlatform: string
-): { graph: CodeGraph; conflicts: Conflict[] } {
+): { graph: CodeGraph; conflicts: Conflict[]; envVarsReferenced: string[] } {
   const conflicts: Conflict[] = [];
   const nodes: CodeGraphNode[] = [];
   const edges: CodeGraphEdge[] = [];
@@ -333,8 +333,14 @@ export function buildDependencyGraphAndConflicts(
     }
   }
 
+  // Collect all unique referenced env variables
+  const envVarsReferenced = Array.from(new Set(
+    Object.values(referencedEnvVarsByFile).flatMap(vars => vars.map(v => v.varName))
+  ));
+
   return {
     graph: { nodes, edges },
-    conflicts
+    conflicts,
+    envVarsReferenced
   };
 }

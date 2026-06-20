@@ -237,13 +237,13 @@ export default function DependencyGraph({ data, onNodeSelect, selectedNode, onIm
       .append('circle')
       .attr('r', (d) => 7 + d.confidence * 10)
       .attr('fill', (d) => {
-        if (d.status === 'stale') return '#ef4444';
-        if (d.status === 'contested') return '#fb923c';
-        return '#475569';
+        if (d.status === 'stale') return 'var(--color-stale)';
+        if (d.status === 'contested') return 'var(--color-contested)';
+        return 'var(--color-fresh)';
       })
       .attr('stroke', (d) => {
-        if (selectedNode?.id === d.id) return '#2dd4bf';
-        if (selectedDownstream.has(d.id)) return '#a78bfa';
+        if (selectedNode?.id === d.id) return 'var(--color-info)';
+        if (selectedDownstream.has(d.id)) return 'var(--violet)';
         return '#0f172a';
       })
       .attr('stroke-width', (d) => (selectedNode?.id === d.id ? 3 : selectedDownstream.has(d.id) ? 2 : 1.5))
@@ -296,7 +296,7 @@ export default function DependencyGraph({ data, onNodeSelect, selectedNode, onIm
       .attr('r', 3.5)
       .attr('fill', (d) => {
         const sourceNode = nodes.find(n => n.id === (typeof d.source === 'object' ? d.source.id : d.source));
-        return sourceNode?.status === 'stale' ? '#ef4444' : '#fb923c';
+        return sourceNode?.status === 'stale' ? 'var(--color-stale)' : 'var(--color-contested)';
       })
       .attr('opacity', 0.95)
       .style('filter', 'drop-shadow(0 0 3px rgba(239,68,68,0.5))');
@@ -346,15 +346,15 @@ export default function DependencyGraph({ data, onNodeSelect, selectedNode, onIm
       <svg ref={svgRef} className="w-full h-full" />
       <div className="absolute bottom-3 right-3 flex flex-col space-y-1 bg-slate-950/90 px-3 py-2 rounded-lg border border-slate-800 text-[10px] text-slate-400">
         <div className="flex items-center space-x-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-[#ef4444]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-[var(--color-stale)]" />
           <span>Stale (Ripple active)</span>
         </div>
         <div className="flex items-center space-x-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-[#fb923c]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-[var(--color-contested)]" />
           <span>Contested (Ripple active)</span>
         </div>
         <div className="flex items-center space-x-1.5">
-          <span className="w-2.5 h-2.5 rounded-full bg-[#475569]" />
+          <span className="w-2.5 h-2.5 rounded-full bg-[var(--color-fresh)]" />
           <span>Fresh (Valid)</span>
         </div>
       </div>

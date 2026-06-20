@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem, ExecutiveSummary } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
 import CodeDependencyGraph from '@/components/CodeDependencyGraph';
+import RiskRadarChart from '@/components/RiskRadarChart';
 import { CodeGraph, Conflict } from '@/lib/code-graph';
+import { computeRiskRadar, RiskRadarData } from '@/lib/risk-radar';
 
 const JUDGE_PRD = `PRODUCT REQUIREMENT DOCUMENT: AI Customer Support Agent
 Goal: Reduce support seat costs and lower first-response times by 80%.
@@ -25,25 +27,25 @@ const JUDGE_FEEDBACK = `USER FEEDBACK & METRICS:
 - Positive: 23% of simple how-to queries were correctly resolved by the bot.`;
 
 const PERSONA = {
-  growth: { name: 'Growth Optimist', emoji: '🚀', title: 'VP of Growth', color: '#34d399', bg: 'rgba(52,211,153,0.06)', border: 'rgba(52,211,153,0.2)', desc: 'Ship fast · Capture market' },
-  eng_realist: { name: 'Eng Realist', emoji: '⚙️', title: 'Principal Architect', color: '#60a5fa', bg: 'rgba(96,165,250,0.06)', border: 'rgba(96,165,250,0.2)', desc: 'Feasibility · Tech debt' },
-  user_advocate: { name: 'User Advocate', emoji: '👤', title: 'Director of UX', color: '#a78bfa', bg: 'rgba(167,139,250,0.06)', border: 'rgba(167,139,250,0.2)', desc: 'Usability · Real feedback' },
+  growth: { name: 'Growth Optimist', emoji: '🚀', title: 'VP of Growth', color: 'var(--color-fresh)', bg: 'rgba(16,185,129,0.06)', border: 'rgba(16,185,129,0.2)', desc: 'Ship fast · Capture market' },
+  eng_realist: { name: 'Eng Realist', emoji: '⚙️', title: 'Principal Architect', color: 'var(--color-info)', bg: 'rgba(56,189,248,0.06)', border: 'rgba(56,189,248,0.2)', desc: 'Feasibility · Tech debt' },
+  user_advocate: { name: 'User Advocate', emoji: '👤', title: 'Director of UX', color: 'var(--violet)', bg: 'rgba(167,139,250,0.06)', border: 'rgba(167,139,250,0.2)', desc: 'Usability · Real feedback' },
 } as const;
 
 const SRC_STYLE: Record<string, { bg: string; color: string; border: string }> = {
-  prd: { bg: 'rgba(96,165,250,0.1)', color: '#93c5fd', border: 'rgba(96,165,250,0.25)' },
-  feature_request: { bg: 'rgba(251,146,60,0.1)', color: '#fdba74', border: 'rgba(251,146,60,0.25)' },
-  feedback: { bg: 'rgba(167,139,250,0.1)', color: '#c4b5fd', border: 'rgba(167,139,250,0.25)' },
+  prd: { bg: 'rgba(96,165,250,0.1)', color: 'var(--color-info)', border: 'rgba(96,165,250,0.25)' },
+  feature_request: { bg: 'rgba(251,146,60,0.1)', color: 'var(--color-contested)', border: 'rgba(251,146,60,0.25)' },
+  feedback: { bg: 'rgba(167,139,250,0.1)', color: 'var(--violet)', border: 'rgba(167,139,250,0.25)' },
 };
 const STATUS_STYLE: Record<string, { bg: string; color: string; border: string }> = {
-  fresh: { bg: 'rgba(52,211,153,0.1)', color: '#6ee7b7', border: 'rgba(52,211,153,0.25)' },
-  stale: { bg: 'rgba(251,146,60,0.12)', color: '#fdba74', border: 'rgba(251,146,60,0.3)' },
-  contested: { bg: 'rgba(248,113,113,0.1)', color: '#fca5a5', border: 'rgba(248,113,113,0.25)' },
+  fresh: { bg: 'rgba(16,185,129,0.1)', color: 'var(--color-fresh)', border: 'rgba(16,185,129,0.2)' },
+  stale: { bg: 'rgba(239,68,68,0.1)', color: 'var(--color-stale)', border: 'rgba(239,68,68,0.2)' },
+  contested: { bg: 'rgba(245,158,11,0.1)', color: 'var(--color-contested)', border: 'rgba(245,158,11,0.2)' },
 };
 const VERDICT_STYLE: Record<string, { bg: string; color: string; border: string }> = {
-  proceed: { bg: 'rgba(52,211,153,0.1)', color: '#34d399', border: 'rgba(52,211,153,0.3)' },
-  modify: { bg: 'rgba(251,146,60,0.1)', color: '#fb923c', border: 'rgba(251,146,60,0.3)' },
-  cut: { bg: 'rgba(248,113,113,0.1)', color: '#f87171', border: 'rgba(248,113,113,0.3)' },
+  proceed: { bg: 'rgba(16,185,129,0.1)', color: 'var(--color-fresh)', border: 'rgba(16,185,129,0.25)' },
+  modify: { bg: 'rgba(245,158,11,0.1)', color: 'var(--color-contested)', border: 'rgba(245,158,11,0.25)' },
+  cut: { bg: 'rgba(239,68,68,0.1)', color: 'var(--color-stale)', border: 'rgba(239,68,68,0.25)' },
 };
 
 function getDownstreamNodeIds(nodeId: string, edges: { from: string; to: string }[]): Set<string> {
@@ -204,6 +206,84 @@ export default function Home() {
   const [deploymentError, setDeploymentError] = useState<string | null>(null);
   const [expandedConflicts, setExpandedConflicts] = useState<Record<number, boolean>>({});
 
+  // Cross-system correlation states
+  const [correlationData, setCorrelationData] = useState<{
+    correlations: {
+      feedbackNodeId: string;
+      relatedConflict: string;
+      confidence: 'high' | 'medium' | 'low';
+      explanation: string;
+    }[];
+    noCorrelationsFound: boolean;
+  } | null>(null);
+  const [isCorrelating, setIsCorrelating] = useState(false);
+  const [correlationError, setCorrelationError] = useState<string | null>(null);
+  const [envVarsReferenced, setEnvVarsReferenced] = useState<string[]>([]);
+
+  // Negotiation Simulator States
+  const [isNegotiationOpen, setIsNegotiationOpen] = useState(false);
+  const [negotiationNode, setNegotiationNode] = useState<Node | null>(null);
+  const [negotiationDebateLog, setNegotiationDebateLog] = useState<DebateLog | null>(null);
+  const [negotiationHistory, setNegotiationHistory] = useState<{ role: 'user' | 'stakeholder'; text: string }[]>([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isNegotiating, setIsNegotiating] = useState(false);
+  const [stakeholderStance, setStakeholderStance] = useState<'hardened' | 'unchanged' | 'softened' | 'reversed'>('unchanged');
+  const [negotiationError, setNegotiationError] = useState<string | null>(null);
+
+  // Initialize Pendo Web SDK once on component mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && typeof pendo !== 'undefined') {
+      pendo.initialize({ visitor: { id: '' } });
+    }
+  }, []);
+
+  const handleCorrelationAnalysis = async (currentNodes: Node[], currentConflicts: Conflict[], currentEnvVars: string[]) => {
+    // Only target feedback signal nodes or nodes with feedback source
+    const feedbackNodes = currentNodes.filter(n => n.type === 'feedback_signal' || n.source === 'feedback');
+    if (feedbackNodes.length === 0 || currentConflicts.length === 0) {
+      setCorrelationData({ correlations: [], noCorrelationsFound: true });
+      return;
+    }
+
+    setIsCorrelating(true);
+    setCorrelationError(null);
+    try {
+      const res = await fetch('/api/correlate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feedbackNodes,
+          codeConflicts: currentConflicts,
+          envVarsReferenced: currentEnvVars
+        })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to correlate findings');
+      }
+      setCorrelationData(data);
+    } catch (err: unknown) {
+      setCorrelationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsCorrelating(false);
+    }
+  };
+
+  // Trigger correlation automatically once both analyses complete
+  useEffect(() => {
+    if (nodes.length > 0 && deploymentData && !correlationData && !isCorrelating && !correlationError) {
+      handleCorrelationAnalysis(nodes, deploymentData.conflicts, envVarsReferenced);
+    }
+  }, [nodes, deploymentData, correlationData, isCorrelating, correlationError, envVarsReferenced]);
+
+  // Reset correlation states when repoUrl changes
+  useEffect(() => {
+    setCorrelationData(null);
+    setCorrelationError(null);
+    setEnvVarsReferenced([]);
+  }, [repoUrl]);
+
   // Helper function to toggle conflict card expansion
   const toggleConflict = (idx: number) => {
     setExpandedConflicts(prev => ({
@@ -224,6 +304,9 @@ export default function Home() {
     setIsAnalyzingDeployment(true);
     setDeploymentError(null);
     setDeploymentData(null);
+    setEnvVarsReferenced([]);
+    setCorrelationData(null);
+    setCorrelationError(null);
     setActiveView('deployment-intelligence');
     setDeploymentLoadingStep(0);
 
@@ -261,6 +344,10 @@ export default function Home() {
         filesCount: data.fileContents?.length || 0,
         dependenciesCount: Object.keys(data.packageJson?.dependencies || {}).length
       });
+      
+      if (data.envVarsReferenced) {
+        setEnvVarsReferenced(data.envVarsReferenced);
+      }
       
     } catch (err: unknown) {
       setDeploymentError(err instanceof Error ? err.message : String(err));
@@ -386,6 +473,7 @@ export default function Home() {
   const runAnalysis = useCallback(async () => {
     setLoading(true); setError(null); setShowResults(true);
     setNodes([]); setGraph(null); setDebateLogs([]); setRoadmap([]); setSummary(null);
+    setCorrelationData(null); setCorrelationError(null);
     setSelectedNode(null); setThinkingAgent(null); setImpactedNodeIds(new Set()); setChallengeHistory({});
     try {
       setActiveStep(1);
@@ -656,9 +744,100 @@ export default function Home() {
     });
   }, [debateLogs, thinkingAgent, fixSuggestions, isGeneratingSuggestions, generateSuggestions]);
 
+  // Negotiation Simulator Logic
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [negotiationHistory, isNegotiating]);
+
+  const openNegotiation = (node: Node, log: DebateLog) => {
+    setNegotiationNode(node);
+    setNegotiationDebateLog(log);
+    setNegotiationHistory([
+      {
+        role: 'stakeholder',
+        text: `I saw the council decided to cut "${node.text}" (${node.id}). As a Senior Stakeholder, I am highly skeptical about keeping this. The debate raised some very critical concerns. Why do you think we should reverse this cut?`
+      }
+    ]);
+    setCurrentMessage('');
+    setStakeholderStance('unchanged');
+    setIsNegotiationOpen(true);
+    setNegotiationError(null);
+  };
+
+  const sendNegotiationMessage = async () => {
+    if (!currentMessage.trim() || isNegotiating || !negotiationNode || !negotiationDebateLog) return;
+
+    const newUserMsg = currentMessage.trim();
+    setCurrentMessage('');
+    
+    const updatedHistory = [...negotiationHistory, { role: 'user' as const, text: newUserMsg }];
+    setNegotiationHistory(updatedHistory);
+    setIsNegotiating(true);
+    setNegotiationError(null);
+
+    try {
+      const res = await fetch('/api/negotiate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          node: negotiationNode,
+          debateLog: negotiationDebateLog,
+          conversationHistory: updatedHistory,
+          userMessage: newUserMsg
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(await res.text());
+      }
+
+      const data = await res.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setNegotiationHistory(prev => [...prev, { role: 'stakeholder' as const, text: data.stakeholderReply }]);
+      setStakeholderStance(data.stanceShift);
+
+      if (data.stanceShift === 'reversed') {
+        setDebateLogs(prev => prev.map(log => {
+          if (log.nodeId === negotiationNode.id) {
+            return {
+              ...log,
+              verdict: 'Proceed - Verdict overturned via negotiation'
+            };
+          }
+          return log;
+        }));
+      }
+    } catch (err: unknown) {
+      console.error('Error in negotiation:', err);
+      const errMsg = err instanceof Error ? err.message : 'An error occurred.';
+      setNegotiationError(errMsg);
+      setNegotiationHistory(prev => [...prev, { role: 'stakeholder' as const, text: 'Sorry, I got disconnected or encountered an error processing that statement.' }]);
+    } finally {
+      setIsNegotiating(false);
+    }
+  };
+
   const staleCount = nodes.filter(n => n.status === 'stale').length;
   const contestedCount = nodes.filter(n => n.status === 'contested').length;
   const freshCount = nodes.filter(n => n.status === 'fresh').length;
+
+  // Risk Radar computation — pure aggregation, no API calls
+  const radarData: RiskRadarData = useMemo(() => computeRiskRadar({
+    nodes,
+    debateLogs,
+    deploymentReadinessScore: deploymentData?.deploymentReadinessScore ?? null,
+    conflicts: deploymentData?.conflicts ?? null,
+    codeGraphNodeCount: deploymentData?.graph?.nodes?.length ?? null,
+  }), [nodes, debateLogs, deploymentData]);
 
   const isGraphDone = activeStep >= 2 && graph;
   const isDebateDone = activeStep >= 4;
@@ -763,7 +942,7 @@ export default function Home() {
             </div>
             <div>
               <div className="pc-logo-title">Product Council AI</div>
-              <div className="pc-logo-sub">Decision Intelligence System · Causality-Driven Reasoning</div>
+              <div className="pc-logo-sub">Decision Intelligence System · AI Boardroom Debate, Code-Level Deployment Scanning, and Risk Radar Analytics</div>
             </div>
           </div>
           <button className="pc-btn-judge" onClick={handleJudgeMode} disabled={loading}>
@@ -777,22 +956,22 @@ export default function Home() {
         <div className="pc-content">
 
           {/* TOP-LEVEL VIEW TABS */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 1 }}>
+          <div style={{ display: 'flex', gap: 'var(--space-sm)', marginBottom: 'var(--space-md)', borderBottom: 'var(--border-default)', paddingBottom: 1 }}>
             <button
               onClick={() => setActiveView('product-council')}
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: activeView === 'product-council' ? '#c4b5fd' : '#8b949e',
-                fontSize: '0.85rem',
+                color: activeView === 'product-council' ? 'var(--violet)' : 'var(--color-neutral)',
+                fontSize: 'var(--font-size-md)',
                 fontWeight: 700,
                 padding: '10px 18px',
                 cursor: 'pointer',
-                borderBottom: activeView === 'product-council' ? '3px solid #a78bfa' : '3px solid transparent',
+                borderBottom: activeView === 'product-council' ? '3px solid var(--violet)' : '3px solid transparent',
                 transition: 'all 0.2s',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6
+                gap: 'var(--space-sm)'
               }}
             >
               💼 Product Council Flow
@@ -802,21 +981,109 @@ export default function Home() {
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: activeView === 'deployment-intelligence' ? '#38bdf8' : '#8b949e',
-                fontSize: '0.85rem',
+                color: activeView === 'deployment-intelligence' ? 'var(--color-info)' : 'var(--color-neutral)',
+                fontSize: 'var(--font-size-md)',
                 fontWeight: 700,
                 padding: '10px 18px',
                 cursor: 'pointer',
-                borderBottom: activeView === 'deployment-intelligence' ? '3px solid #38bdf8' : '3px solid transparent',
+                borderBottom: activeView === 'deployment-intelligence' ? '3px solid var(--color-info)' : '3px solid transparent',
                 transition: 'all 0.2s',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 6
+                gap: 'var(--space-sm)'
               }}
             >
               ⚡ Deployment Intelligence
             </button>
           </div>
+
+          {/* RISK RADAR — Executive Vitals Dashboard */}
+          {(nodes.length > 0 || deploymentData) && (
+            <div className="pc-card pc-fade-in" style={{ background: 'linear-gradient(135deg, rgba(13,17,23,0.95), rgba(19,25,34,0.95))', border: 'var(--border-subtle)', marginBottom: 'var(--space-md)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-md)', paddingBottom: 14, borderBottom: 'var(--border-subtle)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
+                  <div style={{ width: 34, height: 34, borderRadius: 'var(--radius-small)', background: 'linear-gradient(135deg, rgba(167,139,250,0.15), rgba(56,189,248,0.15))', border: '1px solid rgba(167,139,250,0.25)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 'var(--font-size-lg)' }}>
+                    📡
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 800, fontSize: 'var(--font-size-lg)', color: 'var(--text-primary)' }}>Risk Radar</div>
+                    <div style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)' }}>Aggregated vitals across boardroom consensus and codebase scanning.</div>
+                  </div>
+                </div>
+                {radarData.overallScore !== null && (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
+                      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', fontWeight: 700 }}>Overall Health</span>
+                      <span style={{
+                        fontSize: 'var(--font-size-md)',
+                        fontWeight: 900,
+                        fontFamily: 'var(--font-mono)',
+                        padding: '4px 12px',
+                        borderRadius: 'var(--radius-small)',
+                        background: radarData.overallScore >= 70 ? 'rgba(16,185,129,0.12)' : radarData.overallScore >= 45 ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)',
+                        color: radarData.overallScore >= 70 ? 'var(--color-fresh)' : radarData.overallScore >= 45 ? 'var(--color-contested)' : 'var(--color-stale)',
+                        border: `1px solid ${radarData.overallScore >= 70 ? 'rgba(16,185,129,0.25)' : radarData.overallScore >= 45 ? 'rgba(245,158,11,0.25)' : 'rgba(239,68,68,0.25)'}`,
+                      }}>
+                        {radarData.overallScore}%
+                      </span>
+                    </div>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-muted)' }}>Weighted overall health index</span>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' }}>
+                {/* Spider Chart */}
+                <div style={{ flex: '0 0 auto' }}>
+                  <RiskRadarChart data={radarData} size={300} />
+                </div>
+
+                {/* Stat Grid */}
+                <div style={{ flex: '1 1 320px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, minWidth: 0 }}>
+                  {radarData.axes.map(axis => {
+                    const isAvailable = axis.score !== null;
+                    const color = !isAvailable ? '#484f58' : axis.score! >= 70 ? '#34d399' : axis.score! >= 45 ? '#fbbf24' : '#ef4444';
+                    const bgColor = !isAvailable ? 'rgba(255,255,255,0.02)' : axis.score! >= 70 ? 'rgba(52,211,153,0.04)' : axis.score! >= 45 ? 'rgba(251,191,36,0.04)' : 'rgba(239,68,68,0.04)';
+                    const borderColor = !isAvailable ? 'rgba(255,255,255,0.06)' : `${color}30`;
+
+                    return (
+                      <div
+                        key={axis.key}
+                        style={{
+                          padding: '12px 14px',
+                          borderRadius: 10,
+                          background: bgColor,
+                          border: `1px solid ${borderColor}`,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 6,
+                          transition: 'all 0.4s ease',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4 }}>
+                          <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: color }}>{axis.label}</span>
+                          {axis.limitedData && isAvailable && (
+                            <span title="Limited data available" style={{ fontSize: '0.55rem', padding: '1px 4px', borderRadius: 3, background: 'rgba(251,191,36,0.1)', color: '#fbbf24', border: '1px solid rgba(251,191,36,0.2)', fontWeight: 700 }}>~</span>
+                          )}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+                          {isAvailable ? (
+                            <>
+                              <span style={{ fontSize: '1.3rem', fontWeight: 900, fontFamily: 'JetBrains Mono, monospace', color: color, lineHeight: 1 }}>{axis.score}</span>
+                              <span style={{ fontSize: '0.6rem', color: '#8b949e', fontWeight: 600 }}>/ 100</span>
+                            </>
+                          ) : (
+                            <span style={{ fontSize: '0.72rem', color: '#484f58', fontStyle: 'italic' }}>Awaiting data</span>
+                          )}
+                        </div>
+                        <p style={{ fontSize: '0.58rem', color: '#8b949e', lineHeight: 1.4, margin: 0 }}>{axis.rationale}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* JUDGE WALKTHROUGH PANEL */}
           {walkthroughActive && nodes.length > 0 && (
@@ -1088,32 +1355,32 @@ export default function Home() {
               {nodes.length > 0 && (
                 <div className="pc-score-grid">
                   <div className="pc-score-card">
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f87171' }}>Risk Score</span>
-                    <span className="pc-score-value" style={{ color: isGraphDone ? (riskScoreValue >= 7 ? '#ef4444' : riskScoreValue >= 4 ? '#fb923c' : '#34d399') : '#8b949e' }}>
-                      {isGraphDone ? `${riskScoreValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#f87171" size={14} /> Calc...</span>}
+                    <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-stale)' }}>Risk Score</span>
+                    <span className="pc-score-value" style={{ color: isGraphDone ? (riskScoreValue >= 7 ? 'var(--color-stale)' : riskScoreValue >= 4 ? 'var(--color-contested)' : 'var(--color-fresh)') : 'var(--color-neutral)' }}>
+                      {isGraphDone ? `${riskScoreValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)', fontSize: 'var(--font-size-md)', animation: 'pcPulse 1.5s infinite' }}><Spinner color="var(--color-stale)" size={14} /> Calc...</span>}
                     </span>
-                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Stale & Contested claims</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textAlign: 'center' }}>Aggregated volume of stale and contested claims in the PRD.</span>
                   </div>
                   <div className="pc-score-card">
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#34d399' }}>Alignment Score</span>
-                    <span className="pc-score-value" style={{ color: isGraphDone ? (alignmentScoreValue >= 70 ? '#34d399' : alignmentScoreValue >= 40 ? '#fb923c' : '#ef4444') : '#8b949e' }}>
-                      {isGraphDone ? `${alignmentScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#34d399" size={14} /> Calc...</span>}
+                    <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-fresh)' }}>Alignment Score</span>
+                    <span className="pc-score-value" style={{ color: isGraphDone ? (alignmentScoreValue >= 70 ? 'var(--color-fresh)' : alignmentScoreValue >= 40 ? 'var(--color-contested)' : 'var(--color-stale)') : 'var(--color-neutral)' }}>
+                      {isGraphDone ? `${alignmentScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)', fontSize: 'var(--font-size-md)', animation: 'pcPulse 1.5s infinite' }}><Spinner color="var(--color-fresh)" size={14} /> Calc...</span>}
                     </span>
-                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Fresh validated ideas</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textAlign: 'center' }}>Percentage of product claims validated by positive user signals.</span>
                   </div>
                   <div className="pc-score-card">
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#a78bfa' }}>Confidence Score</span>
-                    <span className="pc-score-value" style={{ color: isDebateDone ? (confidenceScoreValue >= 70 ? '#34d399' : confidenceScoreValue >= 40 ? '#fb923c' : '#ef4444') : '#8b949e' }}>
-                      {isDebateDone ? `${confidenceScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#a78bfa" size={14} /> Calc...</span>}
+                    <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--violet)' }}>Confidence Score</span>
+                    <span className="pc-score-value" style={{ color: isDebateDone ? (confidenceScoreValue >= 70 ? 'var(--color-fresh)' : confidenceScoreValue >= 40 ? 'var(--color-contested)' : 'var(--color-stale)') : 'var(--color-neutral)' }}>
+                      {isDebateDone ? `${confidenceScoreValue}%` : <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)', fontSize: 'var(--font-size-md)', animation: 'pcPulse 1.5s infinite' }}><Spinner color="var(--violet)" size={14} /> Calc...</span>}
                     </span>
-                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Assumption health rating</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textAlign: 'center' }}>Average post-debate confidence score of project assumptions.</span>
                   </div>
                   <div className="pc-score-card">
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#60a5fa' }}>Difficulty Index</span>
-                    <span className="pc-score-value" style={{ color: isDebateDone ? (executionDifficultyValue >= 7 ? '#ef4444' : executionDifficultyValue >= 4 ? '#fb923c' : '#34d399') : '#8b949e' }}>
-                      {isDebateDone ? `${executionDifficultyValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: '0.8rem', animation: 'pcPulse 1.5s infinite' }}><Spinner color="#60a5fa" size={14} /> Calc...</span>}
+                    <span style={{ fontSize: 'var(--font-size-xs)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--color-info)' }}>Difficulty Index</span>
+                    <span className="pc-score-value" style={{ color: isDebateDone ? (executionDifficultyValue >= 7 ? 'var(--color-stale)' : executionDifficultyValue >= 4 ? 'var(--color-contested)' : 'var(--color-fresh)') : 'var(--color-neutral)' }}>
+                      {isDebateDone ? `${executionDifficultyValue}/10` : <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)', fontSize: 'var(--font-size-md)', animation: 'pcPulse 1.5s infinite' }}><Spinner color="var(--color-info)" size={14} /> Calc...</span>}
                     </span>
-                    <span style={{ fontSize: '0.58rem', color: '#8b949e' }}>Eng complexity weight</span>
+                    <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textAlign: 'center' }}>Estimated engineering complexity based on roadmap features.</span>
                   </div>
                 </div>
               )}
@@ -1175,8 +1442,20 @@ export default function Home() {
                           </button>
                         );
                       }) : (
-                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, padding: '3rem', textAlign: 'center' }}>
-                          {activeStep === 1 ? <><Spinner color="#2dd4bf" /><p style={{ fontSize: '0.82rem', color: '#8b949e' }}>Extracting nodes...</p></> : <p style={{ fontSize: '0.78rem', fontStyle: 'italic', color: '#484f58' }}>Awaiting extraction...</p>}
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-sm)', padding: '3rem', textAlign: 'center', color: 'var(--color-neutral)' }}>
+                          {activeStep === 1 ? (
+                            <>
+                              <Spinner color="var(--teal)" />
+                              <p style={{ fontSize: 'var(--font-size-md)' }}>Extracting semantic claims & feedback...</p>
+                            </>
+                          ) : (
+                            <>
+                              <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.6 }}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                              </svg>
+                              <p style={{ fontSize: 'var(--font-size-sm)', fontStyle: 'italic' }}>Awaiting extraction inputs...</p>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1240,12 +1519,29 @@ export default function Home() {
                             )}
                           </>
                         ) : (
-                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-                            {activeStep >= 2 ? <><Spinner color="#34d399" /><p style={{ fontSize: '0.82rem', color: '#8b949e' }}>Building graph...</p></> : <p style={{ fontSize: '0.78rem', fontStyle: 'italic', color: '#484f58' }}>Awaiting extraction...</p>}
+                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-sm)', padding: '2rem', textAlign: 'center', color: 'var(--color-neutral)' }}>
+                            {activeStep >= 2 ? (
+                              <>
+                                <Spinner color="var(--color-fresh)" />
+                                <p style={{ fontSize: 'var(--font-size-sm)' }}>Building dependency graph...</p>
+                              </>
+                            ) : (
+                              <>
+                                <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.6 }}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.97 5.97 0 00-.75-2.985m-.938-3.197A5.971 5.971 0 0012 10.5c-2.84 0-5.36 1.972-5.999 4.73A5.965 5.965 0 006 18.72m0 0a5.97 5.97 0 01.75-2.985m0 0A5.97 5.97 0 0112 12.75" />
+                                </svg>
+                                <p style={{ fontSize: 'var(--font-size-sm)', fontStyle: 'italic' }}>Convene the boardroom to build the dependency graph.</p>
+                              </>
+                            )}
                           </div>
                         )
                       ) : nodes.length > 0 ? <Heatmap nodes={graph?.nodes || nodes} /> : (
-                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ fontSize: '0.78rem', fontStyle: 'italic', color: '#484f58' }}>Awaiting data...</p></div>
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'var(--space-sm)', color: 'var(--color-neutral)', padding: '2rem' }}>
+                          <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.6 }}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
+                          </svg>
+                          <p style={{ fontSize: 'var(--font-size-sm)', fontStyle: 'italic' }}>Awaiting boardroom session data...</p>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -1358,7 +1654,19 @@ export default function Home() {
                             <span style={{ fontSize: '0.75rem', color: '#8b949e', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node?.text}</span>
                             
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                              {log.verdict && <span style={{ fontSize: '0.68rem', fontWeight: 700, padding: '2px 9px', borderRadius: 20, background: vs.bg, color: vs.color, border: `1px solid ${vs.border}` }}>{log.verdict.split(' - ')[0]}</span>}
+                              {log.verdict && (
+                                <span style={{ 
+                                  fontSize: '0.68rem', 
+                                  fontWeight: 700, 
+                                  padding: '2px 9px', 
+                                  borderRadius: 20, 
+                                  background: log.verdict.includes('overturned') ? 'rgba(167,139,250,0.15)' : vs.bg, 
+                                  color: log.verdict.includes('overturned') ? '#a78bfa' : vs.color, 
+                                  border: `1px solid ${log.verdict.includes('overturned') ? 'rgba(167,139,250,0.3)' : vs.border}` 
+                                }}>
+                                  {log.verdict.includes('overturned') ? '⚖️ Overturned' : log.verdict.split(' - ')[0]}
+                                </span>
+                              )}
                               {isLive && <span style={{ fontSize: '0.62rem', fontWeight: 700, color: '#f87171' }} className="pc-blink">● LIVE</span>}
                               <svg style={{ color: '#484f58', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', flexShrink: 0 }} width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" /></svg>
                             </div>
@@ -1404,9 +1712,33 @@ export default function Home() {
 
                               {/* Verdict panel */}
                               {log.verdict && (
-                                <div style={{ borderRadius: 12, padding: 12, background: vs.bg, border: `1px solid ${vs.border}` }}>
-                                  <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: vs.color, marginBottom: 6 }}>👤 User Advocate Verdict</div>
-                                  <p style={{ fontSize: '0.85rem', fontWeight: 700, color: vs.color }}>{log.verdict}</p>
+                                <div style={{ borderRadius: 12, padding: 12, background: vs.bg, border: `1px solid ${vs.border}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                  <div>
+                                    <div style={{ fontSize: '0.68rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: vs.color, marginBottom: 6 }}>👤 User Advocate Verdict</div>
+                                    <p style={{ fontSize: '0.85rem', fontWeight: 700, color: vs.color }}>{log.verdict}</p>
+                                  </div>
+                                  {vkey === 'cut' && (
+                                    <button
+                                      onClick={() => openNegotiation(node || { id: log.nodeId, type: 'claim', text: 'Target feature node', source: 'prd', confidence: 0.5, status: 'contested', dependsOn: [] }, log)}
+                                      style={{
+                                        alignSelf: 'flex-start',
+                                        fontSize: '0.65rem',
+                                        fontWeight: 700,
+                                        padding: '4px 10px',
+                                        borderRadius: 6,
+                                        background: 'rgba(239,68,68,0.15)',
+                                        border: '1px solid rgba(239,68,68,0.3)',
+                                        color: '#ef4444',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 5
+                                      }}
+                                    >
+                                      💬 Defend This Decision
+                                    </button>
+                                  )}
                                 </div>
                               )}
 
@@ -1558,14 +1890,22 @@ export default function Home() {
                         </div>
                       );
                     }) : loading && activeStep === 3 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '2rem', textAlign: 'center' }}>
-                        <Spinner color="#a78bfa" />
-                        <p style={{ fontSize: '0.82rem', color: '#8b949e' }}>Debate session starting...</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-sm)', padding: '2rem', textAlign: 'center', color: 'var(--color-neutral)' }}>
+                        <Spinner color="var(--violet)" />
+                        <p style={{ fontSize: 'var(--font-size-sm)' }}>Debate session starting...</p>
                       </div>
                     ) : activeStep > 3 ? (
-                      <p style={{ fontSize: '0.82rem', fontStyle: 'italic', color: '#484f58', textAlign: 'center', padding: '2rem' }}>No contested decisions — boardroom at peace ✅</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-sm)', color: 'var(--color-fresh)', padding: '2rem', textAlign: 'center' }}>
+                        <span style={{ fontSize: '1.2rem' }}>✅</span>
+                        <p style={{ fontSize: 'var(--font-size-sm)', fontStyle: 'italic', fontWeight: 600 }}>No contested decisions — boardroom at peace</p>
+                      </div>
                     ) : (
-                      <p style={{ fontSize: '0.78rem', fontStyle: 'italic', color: '#484f58', textAlign: 'center', padding: '1.5rem' }}>Awaiting graph analysis...</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-sm)', padding: '2rem', textAlign: 'center', color: 'var(--color-neutral)' }}>
+                        <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5" style={{ opacity: 0.6 }}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
+                        </svg>
+                        <p style={{ fontSize: 'var(--font-size-sm)', fontStyle: 'italic' }}>Run analysis to initiate boardroom debates on contested claims.</p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1654,6 +1994,16 @@ export default function Home() {
                           const hasChanged = item.sourceNodes.some(s => challengeHistory[s]) || item.relatedDebate.some(d => challengeHistory[d]);
                           const isImpacted = item.sourceNodes.some(s => impactedNodeIds.has(s) || selectedNode?.id === s);
 
+                          const relatedDebateLog = debateLogs.find(d => 
+                            (item.relatedDebate.includes(d.nodeId) || item.sourceNodes.includes(d.nodeId)) && 
+                            d.verdict?.toLowerCase().startsWith('cut')
+                          );
+                          const hasCutVerdict = !!relatedDebateLog;
+                          const isOverturned = debateLogs.some(d => 
+                            (item.relatedDebate.includes(d.nodeId) || item.sourceNodes.includes(d.nodeId)) && 
+                            d.verdict?.toLowerCase().includes('overturned')
+                          );
+
                           return (
                             <div 
                               key={item.id} 
@@ -1670,26 +2020,71 @@ export default function Home() {
                                 <div style={{ width: 36, height: 36, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '0.82rem', flexShrink: 0, background: i === 0 ? 'linear-gradient(135deg, #2dd4bf, #34d399)' : 'rgba(255,255,255,0.05)', color: i === 0 ? '#fff' : '#8b949e', border: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.08)' }}>#{item.rank}</div>
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                                    <h3 style={{ fontWeight: 700, fontSize: '0.88rem', color: '#f0f6fc' }}>{item.title}</h3>
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                      <h3 style={{ fontWeight: 700, fontSize: '0.88rem', color: '#f0f6fc', margin: 0 }}>{item.title}</h3>
+                                      {isOverturned && (
+                                        <span style={{
+                                          display: 'inline-flex',
+                                          alignItems: 'center',
+                                          gap: 4,
+                                          fontSize: '0.62rem',
+                                          fontWeight: 800,
+                                          padding: '2px 8px',
+                                          borderRadius: 6,
+                                          background: 'rgba(52,211,153,0.12)',
+                                          color: '#34d399',
+                                          border: '1px solid rgba(52,211,153,0.25)',
+                                          width: 'fit-content'
+                                        }}>
+                                          🎉 Verdict overturned via negotiation (Shipped)
+                                        </span>
+                                      )}
+                                    </div>
                                     
-                                    {/* CHALLENGE BUTTON */}
-                                    <button 
-                                      onClick={() => handleChallengeDecision(item)} 
-                                      disabled={loading} 
-                                      style={{ 
-                                        fontSize: '0.65rem', 
-                                        fontWeight: 700, 
-                                        padding: '4px 10px', 
-                                        borderRadius: 6, 
-                                        background: 'rgba(239,68,68,0.1)', 
-                                        border: '1px solid rgba(239,68,68,0.25)', 
-                                        color: '#ef4444', 
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s'
-                                      }}
-                                    >
-                                      {isChallenging ? '⚡ Challenging...' : '🔴 Challenge Decision'}
-                                    </button>
+                                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                                      {/* CHALLENGE BUTTON */}
+                                      <button 
+                                        onClick={() => handleChallengeDecision(item)} 
+                                        disabled={loading} 
+                                        style={{ 
+                                          fontSize: '0.65rem', 
+                                          fontWeight: 700, 
+                                          padding: '4px 10px', 
+                                          borderRadius: 6, 
+                                          background: 'rgba(239,68,68,0.1)', 
+                                          border: '1px solid rgba(239,68,68,0.25)', 
+                                          color: '#ef4444', 
+                                          cursor: 'pointer',
+                                          transition: 'all 0.2s'
+                                        }}
+                                      >
+                                        {isChallenging ? '⚡ Challenging...' : '🔴 Challenge Decision'}
+                                      </button>
+
+                                      {/* DEFEND BUTTON */}
+                                      {hasCutVerdict && !isOverturned && relatedDebateLog && (
+                                        <button 
+                                          onClick={() => {
+                                            const node = (graph?.nodes || nodes).find(x => x.id === relatedDebateLog.nodeId);
+                                            if (node) openNegotiation(node, relatedDebateLog);
+                                          }}
+                                          disabled={loading} 
+                                          style={{ 
+                                            fontSize: '0.65rem', 
+                                            fontWeight: 700, 
+                                            padding: '4px 10px', 
+                                            borderRadius: 6, 
+                                            background: 'rgba(96,165,250,0.15)', 
+                                            border: '1px solid rgba(96,165,250,0.3)', 
+                                            color: '#60a5fa', 
+                                            cursor: 'pointer',
+                                            transition: 'all 0.2s'
+                                          }}
+                                        >
+                                          💬 Defend This Decision
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                   <p style={{ fontSize: '0.78rem', color: '#8b949e', lineHeight: 1.6, marginTop: 4, marginBottom: 8 }}>{item.rationale}</p>
                                   
@@ -1848,17 +2243,22 @@ export default function Home() {
                     {/* Score and Stats */}
                     <div style={{ flex: '1 1 250px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px 0', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
                       <CircularProgress value={deploymentData.deploymentReadinessScore} />
+                      <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', marginTop: 8, textAlign: 'center', maxWidth: 180 }}>
+                        Platform compatibility readiness index based on static analysis.
+                      </span>
                       
                       {/* Stat Row */}
-                      <div style={{ display: 'flex', gap: 14, marginTop: 20, width: '100%', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 16 }}>
+                      <div style={{ display: 'flex', gap: 14, marginTop: 16, width: '100%', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 16 }}>
                         <div style={{ textAlign: 'center' }}>
-                          <span style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Files Scanned</span>
-                          <span style={{ fontSize: '0.95rem', fontWeight: 700, color: '#38bdf8' }}>{deploymentData.filesCount ?? 0}</span>
+                          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Files Scanned</span>
+                          <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 700, color: 'var(--color-info)' }}>{deploymentData.filesCount ?? 0}</span>
+                          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', display: 'block' }}>parsed source files</span>
                         </div>
                         <div style={{ width: 1, background: 'rgba(255,255,255,0.06)' }} />
                         <div style={{ textAlign: 'center' }}>
-                          <span style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Dependencies</span>
-                          <span style={{ fontSize: '0.95rem', fontWeight: 700, color: '#38bdf8' }}>{deploymentData.dependenciesCount ?? 0}</span>
+                          <span style={{ fontSize: 'var(--font-size-xs)', color: 'var(--text-secondary)', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Dependencies</span>
+                          <span style={{ fontSize: 'var(--font-size-md)', fontWeight: 700, color: 'var(--color-info)' }}>{deploymentData.dependenciesCount ?? 0}</span>
+                          <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)', display: 'block' }}>imports detected</span>
                         </div>
                       </div>
                     </div>
@@ -1952,7 +2352,204 @@ export default function Home() {
                       />
                     </div>
                   </div>
+
+                  {/* CROSS-SYSTEM CORRELATION FINDINGS */}
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: 'linear-gradient(135deg, rgba(167,139,250,0.15), rgba(56,189,248,0.15))', color: '#c4b5fd', border: '1px solid rgba(167,139,250,0.25)' }}>03</span>
+                      <h3 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#f0f6fc' }}>🔗 Cross-System Findings</h3>
+                      <span style={{ fontSize: '0.62rem', color: '#8b949e', fontStyle: 'italic', marginLeft: 'auto' }}>
+                        Product Feedback × Code Conflicts
+                      </span>
+                    </div>
+
+                    {/* Correlating Loading State */}
+                    {isCorrelating && (
+                      <div className="pc-card pc-fade-in" style={{ padding: '2.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, background: 'linear-gradient(135deg, rgba(167,139,250,0.04), rgba(56,189,248,0.04))', border: '1px solid rgba(167,139,250,0.15)' }}>
+                        <div style={{ position: 'relative' }}>
+                          <Spinner color="#c4b5fd" size={28} />
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                          <h4 style={{ fontSize: '0.88rem', fontWeight: 700, color: '#c4b5fd', marginBottom: 4 }}>Running Cross-System Correlation Engine</h4>
+                          <p style={{ fontSize: '0.76rem', color: '#8b949e', lineHeight: 1.5 }}>
+                            Analyzing feedback signals against deployment conflicts for causal connections...
+                          </p>
+                        </div>
+                        <div style={{ display: 'flex', gap: 28, marginTop: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#a78bfa', display: 'inline-block', animation: 'pcPulse 1.5s infinite' }} />
+                            <span style={{ fontSize: '0.68rem', color: '#c4b5fd' }}>Feedback Nodes</span>
+                          </div>
+                          <span style={{ color: '#484f58', fontSize: '0.8rem', fontWeight: 800 }}>⇄</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', display: 'inline-block', animation: 'pcPulse 1.5s infinite 0.3s' }} />
+                            <span style={{ fontSize: '0.68rem', color: '#38bdf8' }}>Code Conflicts</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Correlation Error */}
+                    {correlationError && (
+                      <div className="pc-card pc-fade-in" style={{ background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.2)', padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <span style={{ fontSize: '1rem' }}>⚠️</span>
+                        <div>
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: '#fca5a5' }}>Correlation Engine Error</span>
+                          <p style={{ fontSize: '0.72rem', color: '#8b949e', marginTop: 2 }}>{correlationError}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Waiting for both analyses */}
+                    {!isCorrelating && !correlationData && !correlationError && (
+                      <div className="pc-card" style={{ padding: '2rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, background: 'rgba(255,255,255,0.02)', border: '1px dashed rgba(255,255,255,0.1)' }}>
+                        <span style={{ fontSize: '1.2rem', opacity: 0.6 }}>🔗</span>
+                        <p style={{ fontSize: '0.78rem', color: '#8b949e', lineHeight: 1.5, maxWidth: 420 }}>
+                          Cross-system correlations will appear here once <strong style={{ color: '#c4b5fd' }}>Product Risk analysis</strong> and <strong style={{ color: '#38bdf8' }}>Deployment Risk analysis</strong> have both completed on the same repo.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* No Correlations Found — honest signal */}
+                    {correlationData && correlationData.noCorrelationsFound && (
+                      <div className="pc-card pc-fade-in" style={{ padding: '2rem 1.5rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, background: 'rgba(16,185,129,0.03)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                        <div style={{ width: 44, height: 44, borderRadius: '50%', background: 'rgba(16,185,129,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(16,185,129,0.2)' }}>
+                          <span style={{ fontSize: '1.1rem' }}>✅</span>
+                        </div>
+                        <h4 style={{ fontSize: '0.88rem', fontWeight: 700, color: '#a7f3d0' }}>No Strong Cross-System Correlations Detected</h4>
+                        <p style={{ fontSize: '0.76rem', color: '#8b949e', maxWidth: 460, lineHeight: 1.5 }}>
+                          The correlation engine found no high-confidence causal links between user feedback complaints and code-level deployment conflicts in this scan. This means feedback issues are likely unrelated to the technical conflicts detected, or the codebase is well-isolated.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Correlations Found — render cards */}
+                    {correlationData && !correlationData.noCorrelationsFound && correlationData.correlations.length > 0 && (
+                      <div className="pc-card pc-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 16, background: 'linear-gradient(135deg, rgba(167,139,250,0.03), rgba(56,189,248,0.03))', border: '1px solid rgba(167,139,250,0.12)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: '0.85rem' }}>⚡</span>
+                            <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#f0f6fc' }}>
+                              {correlationData.correlations.length} Causal Connection{correlationData.correlations.length !== 1 ? 's' : ''} Detected
+                            </span>
+                          </div>
+                          <span style={{ fontSize: '0.62rem', padding: '2px 8px', borderRadius: 20, background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#fca5a5', fontWeight: 700, textTransform: 'uppercase' }}>
+                            Cross-System
+                          </span>
+                        </div>
+
+                        {correlationData.correlations.map((corr, idx) => {
+                          const feedbackNode = nodes.find(n => n.id === corr.feedbackNodeId);
+                          const confColor = corr.confidence === 'high' ? '#ef4444' : corr.confidence === 'medium' ? '#f59e0b' : '#3b82f6';
+                          const confBg = corr.confidence === 'high' ? 'rgba(239,68,68,0.1)' : corr.confidence === 'medium' ? 'rgba(245,158,11,0.1)' : 'rgba(59,130,246,0.1)';
+                          const confBorder = corr.confidence === 'high' ? 'rgba(239,68,68,0.3)' : corr.confidence === 'medium' ? 'rgba(245,158,11,0.3)' : 'rgba(59,130,246,0.3)';
+
+                          return (
+                            <div key={idx} style={{ borderRadius: 12, border: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden', background: 'rgba(5,8,16,0.4)' }}>
+                              {/* Connected Chips Row */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 0, padding: '14px 16px', flexWrap: 'wrap' }}>
+                                {/* Feedback Chip */}
+                                <button
+                                  onClick={() => {
+                                    if (feedbackNode) {
+                                      setActiveView('product-council');
+                                      setTimeout(() => {
+                                        setSelectedNode(feedbackNode);
+                                        if (graph) {
+                                          setImpactedNodeIds(getDownstreamNodeIds(feedbackNode.id, graph.edges));
+                                        }
+                                        highlightScroll(`node-card-${feedbackNode.id}`);
+                                      }, 100);
+                                    }
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    padding: '8px 14px',
+                                    borderRadius: '10px 4px 4px 10px',
+                                    background: 'rgba(167,139,250,0.08)',
+                                    border: '1px solid rgba(167,139,250,0.25)',
+                                    cursor: feedbackNode ? 'pointer' : 'default',
+                                    transition: 'all 0.2s',
+                                    maxWidth: '42%',
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#a78bfa', flexShrink: 0 }} />
+                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                                    <span style={{ fontSize: '0.58rem', color: '#8b949e', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>Feedback</span>
+                                    <span style={{ fontSize: '0.72rem', color: '#c4b5fd', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>{corr.feedbackNodeId}</span>
+                                    {feedbackNode && (
+                                      <span style={{ fontSize: '0.62rem', color: '#8b949e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', display: 'block', textAlign: 'left' }}>
+                                        {feedbackNode.text.slice(0, 60)}{feedbackNode.text.length > 60 ? '...' : ''}
+                                      </span>
+                                    )}
+                                  </div>
+                                </button>
+
+                                {/* Connecting Arrow */}
+                                <div style={{ display: 'flex', alignItems: 'center', padding: '0 6px', flexShrink: 0 }}>
+                                  <div style={{ width: 20, height: 2, background: 'linear-gradient(90deg, #a78bfa, #38bdf8)', borderRadius: 1 }} />
+                                  <div style={{ width: 0, height: 0, borderTop: '5px solid transparent', borderBottom: '5px solid transparent', borderLeft: '7px solid #38bdf8' }} />
+                                </div>
+
+                                {/* Code Conflict Chip */}
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    padding: '8px 14px',
+                                    borderRadius: '4px 10px 10px 4px',
+                                    background: 'rgba(56,189,248,0.08)',
+                                    border: '1px solid rgba(56,189,248,0.25)',
+                                    maxWidth: '42%',
+                                    minWidth: 0,
+                                  }}
+                                >
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#38bdf8', flexShrink: 0 }} />
+                                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', minWidth: 0 }}>
+                                    <span style={{ fontSize: '0.58rem', color: '#8b949e', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em' }}>Code Conflict</span>
+                                    <span style={{ fontSize: '0.72rem', color: '#38bdf8', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%', display: 'block' }}>
+                                      {corr.relatedConflict}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Confidence Badge */}
+                                <div style={{ marginLeft: 'auto', paddingLeft: 8 }}>
+                                  <span style={{
+                                    fontSize: '0.6rem',
+                                    fontWeight: 700,
+                                    padding: '3px 8px',
+                                    borderRadius: 20,
+                                    background: confBg,
+                                    color: confColor,
+                                    border: `1px solid ${confBorder}`,
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.04em',
+                                    whiteSpace: 'nowrap',
+                                  }}>
+                                    {corr.confidence} confidence
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Explanation */}
+                              <div style={{ padding: '12px 16px', borderTop: '1px solid rgba(255,255,255,0.04)', background: 'rgba(255,255,255,0.015)' }}>
+                                <p style={{ fontSize: '0.76rem', color: '#c9d1d9', lineHeight: 1.6, margin: 0 }}>
+                                  {corr.explanation}
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </>
+
               )}
             </div>
           )}
@@ -1964,6 +2561,352 @@ export default function Home() {
         <span style={{ color: 'rgba(255,255,255,0.1)' }}>·</span>
         <span>Powered by Groq + Gemini + Anthropic Fallbacks</span>
       </footer>
+
+      {/* Negotiation Slide-In Panel */}
+      {isNegotiationOpen && (
+        <>
+          {/* Backdrop */}
+          <div 
+            onClick={() => setIsNegotiationOpen(false)}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100vw',
+              height: '100vh',
+              backgroundColor: 'rgba(5, 8, 16, 0.75)',
+              backdropFilter: 'blur(4px)',
+              zIndex: 998,
+              transition: 'opacity 0.3s ease'
+            }}
+          />
+          
+          {/* Panel */}
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            width: '480px',
+            maxWidth: '100%',
+            height: '100vh',
+            backgroundColor: '#0d1117',
+            borderLeft: '1px solid rgba(255, 255, 255, 0.08)',
+            boxShadow: '-8px 0 32px rgba(0, 0, 0, 0.6)',
+            zIndex: 999,
+            display: 'flex',
+            flexDirection: 'column',
+            animation: 'pcSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
+            fontFamily: 'Inter, system-ui, sans-serif'
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: '#131922'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '1.1rem' }}>⚖️</span>
+                  <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: '#f0f6fc' }}>Negotiation Simulator</h3>
+                </div>
+                <div style={{ fontSize: '0.68rem', color: '#8b949e', marginTop: 2 }}>
+                  Defending decision to cut: <span style={{ fontFamily: 'monospace', color: '#fb923c', fontWeight: 700 }}>{negotiationNode?.id}</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsNegotiationOpen(false)}
+                style={{
+                  background: 'rgba(255,255,255,0.05)',
+                  border: 'none',
+                  color: '#8b949e',
+                  fontSize: '0.9rem',
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Stance Meter */}
+            <div style={{
+              padding: '16px 20px',
+              background: 'rgba(5, 8, 16, 0.4)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.06)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: '#8b949e' }}>
+                  Stakeholder Stance
+                </span>
+                <span style={{
+                  fontSize: '0.68rem',
+                  fontWeight: 800,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  textTransform: 'uppercase',
+                  background: stakeholderStance === 'reversed' ? 'rgba(52,211,153,0.12)' : stakeholderStance === 'softened' ? 'rgba(96,165,250,0.12)' : stakeholderStance === 'hardened' ? 'rgba(239,68,68,0.12)' : 'rgba(251,191,36,0.12)',
+                  color: stakeholderStance === 'reversed' ? '#34d399' : stakeholderStance === 'softened' ? '#60a5fa' : stakeholderStance === 'hardened' ? '#ef4444' : '#fb923c'
+                }}>
+                  {stakeholderStance}
+                </span>
+              </div>
+
+              {/* Slider Track */}
+              <div style={{ position: 'relative', height: '6px', background: 'rgba(255,255,255,0.06)', borderRadius: '3px', margin: '14px 0 6px 0' }}>
+                <div style={{
+                  position: 'absolute',
+                  left: 0,
+                  width: `${stakeholderStance === 'hardened' ? 10 : stakeholderStance === 'unchanged' ? 40 : stakeholderStance === 'softened' ? 70 : 100}%`,
+                  height: '100%',
+                  background: stakeholderStance === 'reversed' ? 'linear-gradient(90deg, #fb923c, #60a5fa, #34d399)' : stakeholderStance === 'softened' ? 'linear-gradient(90deg, #fb923c, #60a5fa)' : stakeholderStance === 'hardened' ? '#ef4444' : '#fb923c',
+                  borderRadius: '3px',
+                  transition: 'all 0.5s cubic-bezier(0.16, 1, 0.3, 1)'
+                }} />
+                
+                {/* Pointer marker */}
+                <div style={{
+                  position: 'absolute',
+                  left: `calc(${stakeholderStance === 'hardened' ? 10 : stakeholderStance === 'unchanged' ? 40 : stakeholderStance === 'softened' ? 70 : 100}% - 7px)`,
+                  top: '-4px',
+                  width: '14px',
+                  height: '14px',
+                  borderRadius: '50%',
+                  background: '#fff',
+                  boxShadow: '0 0 10px rgba(255, 255, 255, 0.9)',
+                  border: '2px solid #0d1117',
+                  transition: 'all 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
+                  zIndex: 2
+                }} />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.62rem', color: '#484f58', fontWeight: 700, padding: '0 2px' }}>
+                <span>😡 HARDENED</span>
+                <span>NEUTRAL</span>
+                <span>😌 SOFTENED</span>
+                <span>🎉 REVERSED</span>
+              </div>
+            </div>
+
+            {/* Conversation Area */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 16,
+              background: '#0a0d14'
+            }}>
+              {/* Feature summary card inside chat */}
+              <div style={{
+                padding: '12px 14px',
+                borderRadius: 10,
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.05)',
+                marginBottom: 4
+              }}>
+                <div style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', fontWeight: 700, letterSpacing: '0.04em', marginBottom: 4 }}>Target Feature</div>
+                <p style={{ fontSize: '0.78rem', color: '#c9d1d9', margin: 0, lineHeight: 1.4 }}>{negotiationNode?.text}</p>
+              </div>
+
+              {negotiationHistory.map((msg, idx) => {
+                const isUser = msg.role === 'user';
+                return (
+                  <div 
+                    key={idx}
+                    style={{
+                      display: 'flex',
+                      flexDirection: isUser ? 'row-reverse' : 'row',
+                      gap: 10,
+                      alignItems: 'flex-start',
+                      maxWidth: '85%',
+                      alignSelf: isUser ? 'flex-end' : 'flex-start',
+                      animation: 'pcFadeIn 0.3s ease'
+                    }}
+                  >
+                    {/* Avatar */}
+                    <div style={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: '50%',
+                      background: isUser ? 'rgba(45,212,191,0.15)' : 'rgba(251,146,60,0.15)',
+                      color: isUser ? '#2dd4bf' : '#fb923c',
+                      border: `1px solid ${isUser ? 'rgba(45,212,191,0.3)' : 'rgba(251,146,60,0.3)'}`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '0.8rem',
+                      fontWeight: 800,
+                      flexShrink: 0
+                    }}>
+                      {isUser ? '👤' : '👔'}
+                    </div>
+
+                    {/* Bubble */}
+                    <div style={{
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      background: isUser ? 'rgba(45,212,191,0.08)' : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${isUser ? 'rgba(45,212,191,0.2)' : 'rgba(255,255,255,0.06)'}`,
+                      color: isUser ? '#e6fcf9' : '#c9d1d9',
+                      fontSize: '0.8rem',
+                      lineHeight: 1.5,
+                      whiteSpace: 'pre-wrap'
+                    }}>
+                      {msg.text}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Stakeholder Typing Loader */}
+              {isNegotiating && (
+                <div style={{
+                  display: 'flex',
+                  gap: 10,
+                  alignItems: 'flex-start',
+                  maxWidth: '85%',
+                  alignSelf: 'flex-start'
+                }}>
+                  <div style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: '50%',
+                    background: 'rgba(251,146,60,0.15)',
+                    color: '#fb923c',
+                    border: '1px solid rgba(251,146,60,0.3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '0.8rem',
+                    flexShrink: 0
+                  }}>
+                    👔
+                  </div>
+                  <div style={{
+                    padding: '10px 14px',
+                    borderRadius: 12,
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid rgba(255,255,255,0.06)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4
+                  }}>
+                    <span className="pc-dot pc-dot-1" style={{ background: '#fb923c', width: 5, height: 5, borderRadius: '50%' }} />
+                    <span className="pc-dot pc-dot-2" style={{ background: '#fb923c', width: 5, height: 5, borderRadius: '50%' }} />
+                    <span className="pc-dot pc-dot-3" style={{ background: '#fb923c', width: 5, height: 5, borderRadius: '50%' }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Scroll anchor */}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Error Banner */}
+            {negotiationError && (
+              <div style={{
+                padding: '10px 16px',
+                background: 'rgba(239,68,68,0.1)',
+                borderTop: '1px solid rgba(239,68,68,0.2)',
+                color: '#f87171',
+                fontSize: '0.72rem',
+                fontWeight: 600
+              }}>
+                ⚠️ {negotiationError}
+              </div>
+            )}
+
+            {/* Bottom Actions / Input */}
+            <div style={{
+              padding: '16px 20px',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+              background: '#131922',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12
+            }}>
+              {stakeholderStance === 'reversed' ? (
+                /* Success banner */
+                <div style={{
+                  padding: '12px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(52,211,153,0.12)',
+                  border: '1px solid rgba(52,211,153,0.25)',
+                  color: '#34d399',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  textAlign: 'center',
+                  animation: 'pcFadeIn 0.4s ease'
+                }}>
+                  {"🎉 You've convinced the stakeholder — this item's verdict has been updated to Ship!"}
+                </div>
+              ) : (
+                /* Text Input Box */
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <input
+                    value={currentMessage}
+                    onChange={e => setCurrentMessage(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendNegotiationMessage();
+                      }
+                    }}
+                    disabled={isNegotiating}
+                    placeholder="Argue your case with specifics..."
+                    style={{
+                      flex: 1,
+                      background: 'rgba(5, 8, 16, 0.6)',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
+                      borderRadius: 8,
+                      padding: '10px 14px',
+                      color: '#f0f6fc',
+                      fontSize: '0.8rem',
+                      outline: 'none',
+                      transition: 'border-color 0.2s'
+                    }}
+                  />
+                  <button
+                    onClick={sendNegotiationMessage}
+                    disabled={isNegotiating || !currentMessage.trim()}
+                    style={{
+                      background: isNegotiating || !currentMessage.trim() ? 'rgba(255,255,255,0.04)' : 'rgba(45,212,191,0.15)',
+                      border: `1px solid ${isNegotiating || !currentMessage.trim() ? 'rgba(255,255,255,0.06)' : 'rgba(45,212,191,0.3)'}`,
+                      color: isNegotiating || !currentMessage.trim() ? '#484f58' : '#2dd4bf',
+                      padding: '0 16px',
+                      borderRadius: 8,
+                      fontSize: '0.78rem',
+                      fontWeight: 700,
+                      cursor: isNegotiating || !currentMessage.trim() ? 'not-allowed' : 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Slide-in slide animations keyframes */}
+      <style>{`
+        @keyframes pcSlideIn {
+          from { transform: translateX(100%); }
+          to { transform: translateX(0); }
+        }
+        @keyframes pcFadeIn {
+          from { opacity: 0; transform: translateY(6px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
     </div>
   );
 }

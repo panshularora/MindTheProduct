@@ -89,7 +89,7 @@ export async function POST(request: Request) {
       const mockEnvExample = 'STRIPE_SECRET_KEY=\nAPI_KEY=';
 
       // Build dependency graph and detect conflicts
-      const { graph, conflicts } = buildDependencyGraphAndConflicts(
+      const { graph, conflicts, envVarsReferenced } = buildDependencyGraphAndConflicts(
         mockFileContents,
         mockPackageJson,
         mockEnvExample,
@@ -173,7 +173,8 @@ Do not include any markdown formatting blocks like \`\`\`json outside the JSON o
         conflicts,
         explainedConflicts,
         deploymentReadinessScore,
-        summary: `[Simulated Repo Mode] ${summaryText}`
+        summary: `[Simulated Repo Mode] ${summaryText}`,
+        envVarsReferenced
       });
     }
 
@@ -330,7 +331,7 @@ Do not include any markdown formatting blocks like \`\`\`json outside the JSON o
     const fileContents = await Promise.all(fileContentsPromises);
 
     // 5. Build dependency graph and detect conflicts
-    const { graph, conflicts } = buildDependencyGraphAndConflicts(
+    const { graph, conflicts, envVarsReferenced } = buildDependencyGraphAndConflicts(
       fileContents,
       parsedPackageJson,
       envExampleContent,
@@ -442,7 +443,8 @@ Do not include any markdown formatting blocks like \`\`\`json outside the JSON o
       conflicts,
       explainedConflicts,
       deploymentReadinessScore,
-      summary
+      summary,
+      envVarsReferenced
     });
 
   } catch (error: unknown) {

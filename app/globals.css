@@ -18,6 +18,35 @@
     --violet: #a78bfa;
     --orange: #fb923c;
     --red: #f87171;
+
+    /* Unified Design System Tokens */
+    --color-fresh: #10b981;
+    --color-stale: #ef4444;
+    --color-contested: #f59e0b;
+    --color-info: #38bdf8;
+    --color-neutral: #8b949e;
+    --color-neutral-dark: #484f58;
+    --color-bg-base: #050810;
+    --color-bg-surface: #0d1117;
+    --color-bg-elevated: #131922;
+
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 16px;
+    --space-lg: 24px;
+    --space-xl: 32px;
+    --space-xxl: 48px;
+
+    --font-size-xs: 0.65rem;
+    --font-size-sm: 0.75rem;
+    --font-size-md: 0.85rem;
+    --font-size-lg: 0.95rem;
+    --font-size-xl: 1.1rem;
+    --font-size-xxl: 1.6rem;
+
+    --radius-default: 12px;
+    --radius-large: 20px;
+    --radius-small: 8px;
   }
 
   html {

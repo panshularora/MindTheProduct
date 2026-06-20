@@ -17,7 +17,7 @@ interface CodeDependencyGraphProps {
 
 interface D3Node extends d3.SimulationNodeDatum {
   id: string;
-  type: 'file';
+  type: 'file' | 'external_package' | 'node_builtin';
   inDegree: number;
   outDegree: number;
 }
@@ -66,12 +66,13 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
     });
 
     graph.edges.forEach(e => {
-      if (inDegreeMap.has(e.to)) {
-        inDegreeMap.set(e.to, inDegreeMap.get(e.to)! + 1);
-      }
-      if (outDegreeMap.has(e.from)) {
-        outDegreeMap.set(e.from, outDegreeMap.get(e.from)! + 1);
-      }
+      if (!inDegreeMap.has(e.from)) inDegreeMap.set(e.from, 0);
+      if (!outDegreeMap.has(e.from)) outDegreeMap.set(e.from, 0);
+      if (!inDegreeMap.has(e.to)) inDegreeMap.set(e.to, 0);
+      if (!outDegreeMap.has(e.to)) outDegreeMap.set(e.to, 0);
+
+      inDegreeMap.set(e.to, inDegreeMap.get(e.to)! + 1);
+      outDegreeMap.set(e.from, outDegreeMap.get(e.from)! + 1);
     });
 
     return { inDegreeMap, outDegreeMap };
@@ -102,11 +103,47 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
     svg.call(zoom);
 
     // Prepare nodes and links
-    const nodes: D3Node[] = graph.nodes.map(n => ({
-      ...n,
-      inDegree: degrees.inDegreeMap.get(n.id) || 0,
-      outDegree: degrees.outDegreeMap.get(n.id) || 0
-    }));
+    const nodeMap = new Map<string, D3Node>();
+    
+    // 1. Add all explicit file nodes from the graph
+    graph.nodes.forEach(n => {
+      nodeMap.set(n.id, {
+        id: n.id,
+        type: 'file',
+        inDegree: degrees.inDegreeMap.get(n.id) || 0,
+        outDegree: degrees.outDegreeMap.get(n.id) || 0
+      });
+    });
+
+    // 2. Identify and add missing nodes referenced in edges (like external packages or built-ins)
+    graph.edges.forEach(e => {
+      if (!nodeMap.has(e.to)) {
+        let nodeType: 'file' | 'external_package' | 'node_builtin' = 'external_package';
+        if (e.importType === 'node_builtin') {
+          nodeType = 'node_builtin';
+        } else if (e.importType === 'internal_file') {
+          nodeType = 'file';
+        }
+        
+        nodeMap.set(e.to, {
+          id: e.to,
+          type: nodeType,
+          inDegree: degrees.inDegreeMap.get(e.to) || 0,
+          outDegree: degrees.outDegreeMap.get(e.to) || 0
+        });
+      }
+      
+      if (!nodeMap.has(e.from)) {
+        nodeMap.set(e.from, {
+          id: e.from,
+          type: 'file',
+          inDegree: degrees.inDegreeMap.get(e.from) || 0,
+          outDegree: degrees.outDegreeMap.get(e.from) || 0
+        });
+      }
+    });
+
+    const nodes: D3Node[] = Array.from(nodeMap.values());
 
     const links: D3Link[] = graph.edges.map(e => ({
       source: e.from,
@@ -130,9 +167,9 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
       .enter()
       .append('line')
       .attr('stroke', d => {
-        if (d.importType === 'node_builtin') return '#a855f7'; // Purple
-        if (d.importType === 'internal_file') return '#06b6d4'; // Cyan/Blue
-        return '#334155'; // Gray for external packages
+        if (d.importType === 'node_builtin') return 'var(--violet)'; 
+        if (d.importType === 'internal_file') return 'var(--color-info)'; 
+        return 'var(--color-neutral-dark)'; 
       })
       .attr('stroke-width', d => (d.importType === 'node_builtin' ? 2 : 1.2))
       .attr('stroke-dasharray', d => (d.importType === 'external_package' ? '3,3' : 'none'))
@@ -156,7 +193,7 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
       .append('circle')
       .attr('class', 'conflict-pulse')
       .attr('fill', 'rgba(239,68,68,0.22)')
-      .attr('stroke', '#ef4444')
+      .attr('stroke', 'var(--color-stale)')
       .attr('r', d => 11 + d.inDegree * 2.5);
 
     // Node core circle
@@ -164,12 +201,16 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
       .append('circle')
       .attr('r', d => 6 + d.inDegree * 2.5)
       .attr('fill', d => {
-        if (conflictMap.has(d.id)) return '#ef4444'; // Red for conflict
-        return '#0f172a'; // Dark slate for files
+        if (conflictMap.has(d.id)) return 'var(--color-stale)'; 
+        if (d.type === 'node_builtin') return '#2e1065'; 
+        if (d.type === 'external_package') return '#1e293b'; 
+        return '#0f172a'; 
       })
       .attr('stroke', d => {
-        if (conflictMap.has(d.id)) return '#fca5a5';
-        return '#38bdf8'; // Cyan border for standard files
+        if (conflictMap.has(d.id)) return 'var(--color-stale-light, #fca5a5)';
+        if (d.type === 'node_builtin') return 'var(--violet)'; 
+        if (d.type === 'external_package') return 'var(--color-neutral-dark)'; 
+        return 'var(--color-info)'; 
       })
       .attr('stroke-width', d => (conflictMap.has(d.id) ? 2 : 1.5))
       .style('filter', d => (conflictMap.has(d.id) ? 'drop-shadow(0 0 6px rgba(239,68,68,0.6))' : 'none'));
@@ -180,7 +221,7 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
       .text(d => d.id.split('/').pop() || d.id)
       .attr('dx', d => 10 + d.inDegree * 2.5)
       .attr('dy', 4)
-      .attr('fill', d => (conflictMap.has(d.id) ? '#fca5a5' : '#94a3b8'))
+      .attr('fill', d => (conflictMap.has(d.id) ? 'var(--color-stale-light, #fca5a5)' : 'var(--color-neutral)'))
       .attr('font-size', '9px')
       .attr('font-family', 'var(--font-mono, monospace)')
       .attr('font-weight', d => (conflictMap.has(d.id) ? '700' : '500'));
@@ -277,34 +318,34 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
       {/* SVG Canvas */}
       <div style={{ flex: '1 1 500px', minHeight: 450, position: 'relative' }}>
         <svg ref={svgRef} style={{ width: '100%', height: '100%', border: '1px solid rgba(255,255,255,0.06)' }} />
-        <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 16, fontSize: '0.7rem', color: '#8b949e', background: 'rgba(5,8,16,0.85)', padding: '6px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(4px)' }}>
+        <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 16, fontSize: '0.7rem', color: 'var(--color-neutral)', background: 'rgba(5,8,16,0.85)', padding: '6px 12px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(4px)' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#06b6d4' }} /> Internal File
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-info)' }} /> Internal File
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#a855f7' }} /> Node Built-in
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--violet)' }} /> Node Built-in
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#475569', border: '1px dashed rgba(255,255,255,0.3)' }} /> External Pack
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-neutral-dark)', border: '1px dashed rgba(255,255,255,0.3)' }} /> External Pack
           </span>
           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ef4444' }} /> Conflict
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--color-stale)' }} /> Conflict
           </span>
         </div>
       </div>
 
       {/* Side Details Panel */}
-      <div style={{ flex: '1 1 280px', background: 'rgba(30,41,59,0.2)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 12, padding: 18, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: '1 1 280px', background: 'rgba(30,41,59,0.2)', border: '1px solid var(--border-default, rgba(255,255,255,0.08))', borderRadius: 12, padding: 18, display: 'flex', flexDirection: 'column' }}>
         {selectedNode && nodeDetails ? (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
               <div style={{ wordBreak: 'break-all', marginRight: 8 }}>
-                <span style={{ fontSize: '0.65rem', color: '#38bdf8', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Selected File</span>
+                <span style={{ fontSize: '0.65rem', color: 'var(--color-info)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Selected File</span>
                 <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: '#f0f6fc', marginTop: 2 }}>{selectedNode.id}</h4>
               </div>
               <button 
                 onClick={() => setSelectedNode(null)}
-                style={{ background: 'transparent', border: 'none', color: '#8b949e', cursor: 'pointer', fontSize: '0.85rem', padding: 2 }}
+                style={{ background: 'transparent', border: 'none', color: 'var(--color-neutral)', cursor: 'pointer', fontSize: '0.85rem', padding: 2 }}
               >
                 ✕
               </button>
@@ -313,20 +354,20 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
             {/* Conflict Alert Section */}
             {nodeDetails.conflict && (
               <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, padding: 12, marginBottom: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', fontWeight: 700, color: '#ef4444', marginBottom: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-stale)', marginBottom: 6 }}>
                   🚨 {nodeDetails.conflict.type}
                 </div>
-                <p style={{ fontSize: '0.78rem', color: '#fca5a5', lineHeight: 1.4, marginBottom: 10 }}>
+                <p style={{ fontSize: '0.78rem', color: 'var(--color-stale-light, #fca5a5)', lineHeight: 1.4, marginBottom: 10 }}>
                   {nodeDetails.conflict.description}
                 </p>
                 {nodeDetails.explained && (
                   <div style={{ borderTop: '1px solid rgba(239,68,68,0.15)', paddingTop: 10, marginTop: 4 }}>
-                    <h5 style={{ fontSize: '0.75rem', fontWeight: 700, color: '#fca5a5', marginBottom: 4 }}>Platform Impact</h5>
-                    <p style={{ fontSize: '0.76rem', color: '#cbd5e1', lineHeight: 1.4, marginBottom: 10 }}>
+                    <h5 style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-stale-light, #fca5a5)', marginBottom: 4 }}>Platform Impact</h5>
+                    <p style={{ fontSize: '0.76rem', color: 'var(--color-neutral-light, #cbd5e1)', lineHeight: 1.4, marginBottom: 10 }}>
                       {nodeDetails.explained.platformSpecificExplanation}
                     </p>
-                    <h5 style={{ fontSize: '0.75rem', fontWeight: 700, color: '#fca5a5', marginBottom: 4 }}>Suggested Fix</h5>
-                    <p style={{ fontSize: '0.76rem', color: '#38bdf8', lineHeight: 1.4, fontWeight: 500 }}>
+                    <h5 style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-stale-light, #fca5a5)', marginBottom: 4 }}>Suggested Fix</h5>
+                    <p style={{ fontSize: '0.76rem', color: 'var(--color-info)', lineHeight: 1.4, fontWeight: 500 }}>
                       ✓ {nodeDetails.explained.suggestedFix}
                     </p>
                   </div>
@@ -337,12 +378,12 @@ export default function CodeDependencyGraph({ graph, conflicts, explainedConflic
             {/* Standard Stats */}
             <div style={{ display: 'flex', gap: 12, marginBottom: 16, borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: 12 }}>
               <div style={{ flex: 1, background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.03)' }}>
-                <div style={{ fontSize: '0.6rem', color: '#8b949e', textTransform: 'uppercase' }}>Imported By</div>
-                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#38bdf8' }}>{selectedNode.inDegree}</div>
+                <div style={{ fontSize: '0.6rem', color: 'var(--color-neutral)', textTransform: 'uppercase' }}>Imported By</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--color-info)' }}>{selectedNode.inDegree}</div>
               </div>
               <div style={{ flex: 1, background: 'rgba(255,255,255,0.02)', padding: '6px 10px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.03)' }}>
-                <div style={{ fontSize: '0.6rem', color: '#8b949e', textTransform: 'uppercase' }}>Imports</div>
-                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#38bdf8' }}>{selectedNode.outDegree}</div>
+                <div style={{ fontSize: '0.6rem', color: 'var(--color-neutral)', textTransform: 'uppercase' }}>Imports</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--color-info)' }}>{selectedNode.outDegree}</div>
               </div>
             </div>
 
