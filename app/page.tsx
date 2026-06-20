@@ -137,6 +137,11 @@ export default function Home() {
   const [importedRepoName, setImportedRepoName] = useState<string | null>(null);
   const [timelineInsight, setTimelineInsight] = useState('');
 
+  // Initialize Pendo SDK once on app mount
+  useEffect(() => {
+    pendo.initialize({ visitor: { id: '' } });
+  }, []);
+
   const WALKTHROUGH_STEPS = [
     {
       title: "1. Conflicting Evidence",
