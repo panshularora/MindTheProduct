@@ -431,7 +431,7 @@ const PENDO_SCRIPT = `
       var v, w, x, y, z;
       o = p[d] = p[d] || {};
       o._q = [];
-      v = ['initialize', 'identify', 'updateOptions', 'pageLoad'];
+      v = ['initialize', 'identify', 'updateOptions', 'pageLoad', 'track', 'trackAgent'];
       for (w = 0, x = v.length; w < x; ++w)(function(m) {
         o[m] = o[m] || function() {
           o._q[m === v[0] ? 'unshift' : 'push']([m].concat([].slice.call(arguments, 0)));
