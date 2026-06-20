@@ -263,6 +263,19 @@ export default function Home() {
         throw new Error(data.error || 'Failed to correlate findings');
       }
       setCorrelationData(data);
+
+      if (typeof pendo !== 'undefined') {
+        const correlations = data.correlations || [];
+        pendo.track("cross_system_correlation_completed", {
+          feedbackNodeCount: feedbackNodes.length,
+          codeConflictCount: currentConflicts.length,
+          correlationsFound: correlations.length,
+          noCorrelationsFound: !!data.noCorrelationsFound,
+          highConfidenceCorrelations: correlations.filter((c: { confidence: string }) => c.confidence === 'high').length,
+          mediumConfidenceCorrelations: correlations.filter((c: { confidence: string }) => c.confidence === 'medium').length,
+          lowConfidenceCorrelations: correlations.filter((c: { confidence: string }) => c.confidence === 'low').length,
+        });
+      }
     } catch (err: unknown) {
       setCorrelationError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -336,14 +349,34 @@ export default function Home() {
         throw new Error(data.error || 'Failed to analyze deployment risk');
       }
 
+      const explainedConflicts = data.explainedConflicts || [];
+      const filesScanned = data.fileContents?.length || 0;
+      const dependenciesCount = Object.keys(data.packageJson?.dependencies || {}).length;
+      const readinessScore = data.deploymentReadinessScore ?? 100;
+
       setDeploymentData({
         graph: data.graph,
         conflicts: data.conflicts,
-        explainedConflicts: data.explainedConflicts || [],
-        deploymentReadinessScore: data.deploymentReadinessScore ?? 100,
-        filesCount: data.fileContents?.length || 0,
-        dependenciesCount: Object.keys(data.packageJson?.dependencies || {}).length
+        explainedConflicts,
+        deploymentReadinessScore: readinessScore,
+        filesCount: filesScanned,
+        dependenciesCount,
       });
+
+      if (typeof pendo !== 'undefined') {
+        pendo.track("deployment_risk_analysis_completed", {
+          repoUrl,
+          targetPlatform,
+          conflictsCount: data.conflicts?.length || 0,
+          highSeverityCount: explainedConflicts.filter((c: { severity: string }) => c.severity === 'high').length,
+          mediumSeverityCount: explainedConflicts.filter((c: { severity: string }) => c.severity === 'medium').length,
+          lowSeverityCount: explainedConflicts.filter((c: { severity: string }) => c.severity === 'low').length,
+          deploymentReadinessScore: readinessScore,
+          filesScanned,
+          dependenciesCount,
+          explainedConflictsCount: explainedConflicts.length,
+        });
+      }
       
       if (data.envVarsReferenced) {
         setEnvVarsReferenced(data.envVarsReferenced);
@@ -409,6 +442,14 @@ export default function Home() {
     setFeatureRequests(JUDGE_FEATURES);
     setFeedback(JUDGE_FEEDBACK);
     setIsJudgeMode(true);
+
+    if (typeof pendo !== 'undefined') {
+      pendo.track("judge_mode_activated", {
+        prdLength: JUDGE_PRD.length,
+        featureRequestsLength: JUDGE_FEATURES.length,
+        feedbackLength: JUDGE_FEEDBACK.length,
+      });
+    }
   };
 
   const handleGithubImport = async () => {
@@ -434,6 +475,17 @@ export default function Home() {
       setFeedback(data.feedback || '');
       setImportedRepoName(data.repoName);
       if (data.timelineInsight) setTimelineInsight(data.timelineInsight);
+
+      if (typeof pendo !== 'undefined') {
+        pendo.track("github_repo_imported", {
+          repoUrl,
+          repoName: data.repoName,
+          prdLength: (data.prd || '').length,
+          featureRequestsLength: (data.featureRequests || '').length,
+          feedbackLength: (data.feedback || '').length,
+          hasTimelineInsight: !!data.timelineInsight,
+        });
+      }
       
     } catch (err: unknown) {
       setImportError(err instanceof Error ? err.message : String(err));
@@ -517,15 +569,45 @@ export default function Home() {
       if (!r4.ok) { const e = await r4.json().catch(() => ({})); throw new Error(e.error || 'Synthesis failed'); }
       const { roadmap: rm } = await r4.json();
       setRoadmap(rm);
-      setSummary(computeSummary(gd.nodes, logs, rm));
+      const sm = computeSummary(gd.nodes, logs, rm);
+      setSummary(sm);
       setActiveStep(5);
+
+      if (typeof pendo !== 'undefined') {
+        pendo.track("full_pipeline_analysis_completed", {
+          nodeCount: gd.nodes.length,
+          staleNodeCount: gd.nodes.filter((x: Node) => x.status === 'stale').length,
+          contestedNodeCount: gd.nodes.filter((x: Node) => x.status === 'contested').length,
+          freshNodeCount: gd.nodes.filter((x: Node) => x.status === 'fresh').length,
+          debateLogCount: logs.length,
+          roadmapItemCount: rm.length,
+          isJudgeMode,
+          prdLength: prd.length,
+          featureRequestsLength: featureRequests.length,
+          feedbackLength: feedback.length,
+          riskScore: sm.riskScore,
+          alignmentScore: sm.alignmentScore,
+        });
+      }
       
       if (isJudgeMode) {
         setWalkthroughActive(true);
         setWalkthroughStep(0);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Unexpected error');
+      const errorMessage = err instanceof Error ? err.message : 'Unexpected error';
+      setError(errorMessage);
+
+      if (typeof pendo !== 'undefined') {
+        pendo.track("pipeline_analysis_failed", {
+          errorMessage: errorMessage.substring(0, 200),
+          isJudgeMode,
+          prdLength: prd.length,
+          featureRequestsLength: featureRequests.length,
+          feedbackLength: feedback.length,
+        });
+      }
+
       setActiveStep(0);
     } finally { setLoading(false); }
   }, [prd, featureRequests, feedback, isJudgeMode]);
@@ -635,6 +717,26 @@ export default function Home() {
       setRoadmap(rm);
       setSummary(computeSummary(nodes, updatedLogs, rm));
       setActiveStep(5);
+
+      if (typeof pendo !== 'undefined') {
+        const newVerdicts: Record<string, string> = {};
+        updatedLogs.forEach(l => {
+          if (relatedIds.includes(l.nodeId)) {
+            newVerdicts[l.nodeId] = l.verdict.split(' - ')[0] || l.verdict;
+          }
+        });
+        const verdictChanged = Object.keys(prevVerdicts).some(
+          id => prevVerdicts[id] !== newVerdicts[id]
+        );
+        pendo.track("decision_challenged", {
+          roadmapItemId: item.id,
+          roadmapItemTitle: item.title.substring(0, 100),
+          roadmapItemRank: item.rank,
+          sourceNodeCount: item.sourceNodes.length,
+          relatedDebateCount: item.relatedDebate.length,
+          verdictChanged,
+        });
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unexpected challenge error');
     } finally {
@@ -703,6 +805,19 @@ export default function Home() {
           }
         }
       }
+
+      if (typeof pendo !== 'undefined') {
+        const originalVerdict = log.verdict?.split(' - ')[0] || log.verdict;
+        const newVerdict = currentRerunLog.verdict?.split(' - ')[0] || currentRerunLog.verdict;
+        pendo.track("debate_rerun_completed", {
+          nodeId,
+          proposedFixLength: fix.length,
+          originalVerdict,
+          newVerdict,
+          verdictChanged: originalVerdict !== newVerdict,
+          debateTurnCount: currentRerunLog.turns.length,
+        });
+      }
     } catch (err: unknown) {
       console.error(err);
       setError(err instanceof Error ? err.message : 'Unexpected challenge error');
@@ -725,6 +840,17 @@ export default function Home() {
         const data = await res.json();
         if (data.suggestions) {
           setFixSuggestions(prev => ({ ...prev, [log.nodeId]: data.suggestions }));
+
+          if (typeof pendo !== 'undefined') {
+            const node = nodes.find(n => n.id === log.nodeId);
+            pendo.track("fix_suggestions_generated", {
+              nodeId: log.nodeId,
+              suggestionsCount: data.suggestions.length,
+              nodeVerdict: log.verdict,
+              nodeType: node?.type || "unknown",
+              nodeSource: node?.source || "unknown",
+            });
+          }
         }
       }
     } catch (err) {
@@ -766,6 +892,16 @@ export default function Home() {
     setStakeholderStance('unchanged');
     setIsNegotiationOpen(true);
     setNegotiationError(null);
+
+    if (typeof pendo !== 'undefined') {
+      pendo.track("negotiation_session_started", {
+        nodeId: node.id,
+        nodeText: node.text.substring(0, 200),
+        nodeType: node.type,
+        nodeSource: node.source,
+        originalVerdict: log.verdict,
+      });
+    }
   };
 
   const sendNegotiationMessage = async () => {
@@ -805,6 +941,17 @@ export default function Home() {
       setNegotiationHistory(prev => [...prev, { role: 'stakeholder' as const, text: data.stakeholderReply }]);
       setStakeholderStance(data.stanceShift);
 
+      if (typeof pendo !== 'undefined') {
+        pendo.track("negotiation_message_sent", {
+          nodeId: negotiationNode.id,
+          messageLength: newUserMsg.length,
+          messageNumber: updatedHistory.filter(m => m.role === 'user').length,
+          stanceShift: data.stanceShift,
+          previousStance: stakeholderStance,
+          conversationTurnCount: updatedHistory.length + 1,
+        });
+      }
+
       if (data.stanceShift === 'reversed') {
         setDebateLogs(prev => prev.map(log => {
           if (log.nodeId === negotiationNode.id) {
@@ -815,6 +962,15 @@ export default function Home() {
           }
           return log;
         }));
+
+        if (typeof pendo !== 'undefined') {
+          pendo.track("negotiation_verdict_overturned", {
+            nodeId: negotiationNode.id,
+            nodeText: negotiationNode.text.substring(0, 200),
+            turnsToReverse: updatedHistory.filter(m => m.role === 'user').length,
+            totalConversationMessages: updatedHistory.length + 1,
+          });
+        }
       }
     } catch (err: unknown) {
       console.error('Error in negotiation:', err);
@@ -907,6 +1063,7 @@ export default function Home() {
 
   const downloadRoadmapAsMarkdown = () => {
     const date = new Date().toISOString().split('T')[0];
+    const fileName = `product-council-roadmap-${date}.md`;
     let md = `# Product Council AI — Roadmap Report\n\n`;
     md += `Generated: ${new Date().toLocaleString()}\n\n`;
     
@@ -918,11 +1075,19 @@ export default function Home() {
 
     md += `---\n*Generated by Product Council AI*`;
 
+    if (typeof pendo !== 'undefined') {
+      pendo.track("roadmap_exported", {
+        roadmapItemCount: roadmap.length,
+        exportFormat: "markdown",
+        fileName,
+      });
+    }
+
     const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `product-council-roadmap-${date}.md`;
+    link.download = fileName;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
