@@ -57,6 +57,9 @@ export async function callLLMUnified({
 }): Promise<string> {
   const groqKey = getApiKey('GROQ_API_KEY');
   const anthropicKey = getApiKey('ANTHROPIC_API_KEY');
+  const geminiKey = getApiKey('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
+
+  const errors: string[] = [];
 
   // 1. Try Groq first with multi-model fallback list (handles TPD/RPM rate limits on a per-model basis)
   if (groqKey && !groqKey.includes('your_groq_key_here')) {
@@ -75,13 +78,15 @@ export async function callLLMUnified({
         if (res) return res.trim();
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        errors.push(`Groq (${model}): ${errMsg}`);
         console.warn(`Groq model ${model} call failed, trying next. Error message:`, errMsg);
       }
     }
+  } else {
+    errors.push('Groq key is missing or not configured.');
   }
 
-  // 2. Try Gemini Flash models as fallback (since we have a verified valid GEMINI_API_KEY in the OS environment!)
-  const geminiKey = getApiKey('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
+  // 2. Try Gemini Flash models as fallback
   if (geminiKey && !geminiKey.includes('your_gemini_key_here')) {
     const geminiModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash-lite'];
     for (const model of geminiModels) {
@@ -105,13 +110,18 @@ export async function callLLMUnified({
           const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
           if (content) return content.trim();
         } else {
-          console.warn(`Gemini model ${model} response error:`, res.status, await res.text());
+          const errText = await res.text();
+          errors.push(`Gemini (${model}): Status ${res.status} - ${errText}`);
+          console.warn(`Gemini model ${model} response error:`, res.status, errText);
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        errors.push(`Gemini (${model}) exception: ${errMsg}`);
         console.warn(`Gemini model ${model} failed, trying next. Error message:`, errMsg);
       }
     }
+  } else {
+    errors.push('Gemini key is missing or not configured.');
   }
 
   // 3. Try Anthropic as last fallback
@@ -130,11 +140,14 @@ export async function callLLMUnified({
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
+      errors.push(`Anthropic exception: ${errMsg}`);
       console.error('All LLM calls failed including Anthropic. Error:', errMsg);
     }
+  } else {
+    errors.push('Anthropic key is missing or not configured.');
   }
 
-  throw new Error('All configured LLM API calls failed or keys are missing.');
+  throw new Error(`All configured LLM API calls failed:\n${errors.map(e => `• ${e}`).join('\n')}`);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
