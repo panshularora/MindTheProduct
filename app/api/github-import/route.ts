@@ -134,21 +134,32 @@ Return ONLY valid JSON matching this format:
 }
 Do not include any markdown formatting blocks like \`\`\`json outside the JSON object. Just the raw JSON.`;
 
-    let parsed: any = null;
+    interface GithubImportParsedResponse {
+      prd: string;
+      featureRequests: string;
+      feedback: string;
+      timelineInsight?: string;
+    }
+
+    let parsed: GithubImportParsedResponse | null = null;
     let attempts = 0;
     while (attempts < 2) {
       attempts++;
       try {
         const text = await callLLMUnified({ prompt, jsonMode: true, temperature: 0.2 });
-        parsed = cleanAndParseJSON(text);
+        parsed = cleanAndParseJSON(text) as GithubImportParsedResponse;
         if (parsed && typeof parsed === 'object' && parsed.prd && parsed.featureRequests && parsed.feedback) {
           break; // Valid!
         } else {
           throw new Error('Invalid JSON shape.');
         }
-      } catch (err) {
+      } catch {
         if (attempts >= 2) throw new Error('Failed to parse LLM synthesis as JSON.');
       }
+    }
+
+    if (!parsed) {
+      throw new Error('Failed to parse LLM synthesis as JSON.');
     }
 
     return NextResponse.json({
