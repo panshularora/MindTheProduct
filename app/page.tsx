@@ -230,6 +230,9 @@ export default function Home() {
   const [stakeholderStance, setStakeholderStance] = useState<'hardened' | 'unchanged' | 'softened' | 'reversed'>('unchanged');
   const [negotiationError, setNegotiationError] = useState<string | null>(null);
 
+  // Stable conversation ID for Pendo trackAgent across the session
+  const pendoConversationId = useRef(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `session_${Date.now()}`);
+
   // Initialize Pendo Web SDK once on component mount
   useEffect(() => {
     if (typeof window !== 'undefined' && typeof pendo !== 'undefined') {
@@ -475,7 +478,17 @@ export default function Home() {
     setNodes([]); setGraph(null); setDebateLogs([]); setRoadmap([]); setSummary(null);
     setCorrelationData(null); setCorrelationError(null);
     setSelectedNode(null); setThinkingAgent(null); setImpactedNodeIds(new Set()); setChallengeHistory({});
+    const analysisMessageId = crypto.randomUUID();
     try {
+      if (typeof pendo !== 'undefined') {
+        pendo.trackAgent("prompt", {
+          agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+          conversationId: pendoConversationId.current,
+          messageId: analysisMessageId,
+          content: [prd, featureRequests, feedback].filter(Boolean).join('\n---\n'),
+          suggestedPrompt: isJudgeMode,
+        });
+      }
       setActiveStep(1);
       const r1 = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prd, featureRequests, feedback }) });
       if (!r1.ok) { const e = await r1.json().catch(() => ({})); throw new Error(e.error || 'Extraction failed'); }
@@ -517,8 +530,19 @@ export default function Home() {
       if (!r4.ok) { const e = await r4.json().catch(() => ({})); throw new Error(e.error || 'Synthesis failed'); }
       const { roadmap: rm } = await r4.json();
       setRoadmap(rm);
-      setSummary(computeSummary(gd.nodes, logs, rm));
+      const computedSummary = computeSummary(gd.nodes, logs, rm);
+      setSummary(computedSummary);
       setActiveStep(5);
+
+      if (typeof pendo !== 'undefined') {
+        pendo.trackAgent("agent_response", {
+          agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+          conversationId: pendoConversationId.current,
+          messageId: `agent_response_${analysisMessageId}`,
+          content: `Extracted ${gd.nodes.length} nodes, ${logs.length} debates, ${rm.length} roadmap items. Risk: ${computedSummary.topRisk}`,
+          toolsUsed: ["extract", "graph", "debate", "synthesize"],
+        });
+      }
       
       if (isJudgeMode) {
         setWalkthroughActive(true);
@@ -539,6 +563,14 @@ export default function Home() {
 
   // Challenge Decision Logic
   const handleChallengeDecision = async (item: RoadmapItem) => {
+    if (typeof pendo !== 'undefined') {
+      pendo.trackAgent("user_reaction", {
+        agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+        conversationId: pendoConversationId.current,
+        messageId: `challenge_${item.id}_${Date.now()}`,
+        content: "retry",
+      });
+    }
     setChallengingItemId(item.id);
     setLoading(true);
 
@@ -647,6 +679,14 @@ export default function Home() {
     const fix = proposedFixes[nodeId];
     if (!fix || !fix.trim()) return;
 
+    if (typeof pendo !== 'undefined') {
+      pendo.trackAgent("user_reaction", {
+        agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+        conversationId: pendoConversationId.current,
+        messageId: `rerun_${nodeId}_${Date.now()}`,
+        content: "retry",
+      });
+    }
     setIsRerunning(prev => ({ ...prev, [nodeId]: true }));
     const targetNode = nodes.find(n => n.id === nodeId);
 
@@ -772,12 +812,22 @@ export default function Home() {
     if (!currentMessage.trim() || isNegotiating || !negotiationNode || !negotiationDebateLog) return;
 
     const newUserMsg = currentMessage.trim();
+    const negotiationMsgId = crypto.randomUUID();
     setCurrentMessage('');
     
     const updatedHistory = [...negotiationHistory, { role: 'user' as const, text: newUserMsg }];
     setNegotiationHistory(updatedHistory);
     setIsNegotiating(true);
     setNegotiationError(null);
+
+    if (typeof pendo !== 'undefined') {
+      pendo.trackAgent("prompt", {
+        agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+        conversationId: pendoConversationId.current,
+        messageId: negotiationMsgId,
+        content: newUserMsg,
+      });
+    }
 
     try {
       const res = await fetch('/api/negotiate', {
@@ -800,6 +850,15 @@ export default function Home() {
       const data = await res.json();
       if (data.error) {
         throw new Error(data.error);
+      }
+
+      if (typeof pendo !== 'undefined') {
+        pendo.trackAgent("agent_response", {
+          agentId: "_LNMc6UrPXzjBlBAeI0o6oV-q70",
+          conversationId: pendoConversationId.current,
+          messageId: `agent_response_${negotiationMsgId}`,
+          content: data.stakeholderReply,
+        });
       }
 
       setNegotiationHistory(prev => [...prev, { role: 'stakeholder' as const, text: data.stakeholderReply }]);
