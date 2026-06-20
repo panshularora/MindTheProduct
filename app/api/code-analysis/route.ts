@@ -40,6 +40,143 @@ export async function POST(request: Request) {
     const platform = targetPlatform || 'vercel';
     console.log('Code analysis target platform:', platform);
 
+    // If mockConflicts is true, bypass API calls to prevent rate limits
+    if (mockConflicts === true) {
+      console.log('Bypassing GitHub API calls and using simulated repository files...');
+      
+      const mockPackageJson = {
+        dependencies: {
+          'next': '^14.1.0',
+          'react': '^18.2.0',
+          'react-dom': '^18.2.0',
+          '@material-ui/core': '^4.12.4',
+          'lodash': '^4.17.21'
+        },
+        devDependencies: {
+          'typescript': '^5.3.3',
+          '@types/react': '^18.2.48'
+        },
+        peerDependencies: {},
+        engines: {
+          'node': '<14'
+        },
+        scripts: {
+          'dev': 'next dev',
+          'build': 'next build'
+        }
+      };
+
+      const mockFileContents = [
+        {
+          path: 'app/page.tsx',
+          content: `'use client';\nimport React from 'react';\nimport RoadmapView from '@/components/RoadmapView';\nimport { fetchData } from '@/lib/utils';\nexport default function Page() {\n  return <RoadmapView />;\n}`
+        },
+        {
+          path: 'components/RoadmapView.tsx',
+          content: `'use client';\nimport React from 'react';\nimport fs from 'fs';\nexport default function RoadmapView() {\n  return <div>Roadmap module</div>;\n}`
+        },
+        {
+          path: 'lib/api-keys.ts',
+          content: `export const stripeKey = process.env.STRIPE_SECRET_KEY;\nexport const nextAuthSecret = process.env.NEXTAUTH_SECRET;`
+        },
+        {
+          path: 'lib/utils.ts',
+          content: `import lodash from 'lodash';\nexport function fetchData() { return []; }`
+        }
+      ];
+
+      const mockSortedPaths = mockFileContents.map(f => f.path);
+      const mockEnvExample = 'STRIPE_SECRET_KEY=\nAPI_KEY=';
+
+      // Build dependency graph and detect conflicts
+      const { graph, conflicts } = buildDependencyGraphAndConflicts(
+        mockFileContents,
+        mockPackageJson,
+        mockEnvExample,
+        platform
+      );
+
+      let explainedConflicts: ExplainedConflict[] = [];
+      let summaryText = `No structural conflicts or deployment risks were detected in the codebase for target platform ${platform}.`;
+
+      if (conflicts.length > 0) {
+        const prompt = `You are a deployment intelligence expert specialized in analyzing platform compatibility conflicts.
+You will be given a list of ALREADY-DETECTED structural conflicts found via static analysis. Do not invent new conflicts.
+For each conflict given, explain specifically why it matters for deployment on the target platform: ${platform}, and give one concrete fix.
+If a conflict type doesn't apply meaningfully to this platform, say so explicitly rather than padding the explanation.
+
+Target Platform: ${platform}
+Package.json Dependencies: ${JSON.stringify(mockPackageJson.dependencies, null, 2)}
+Package.json devDependencies: ${JSON.stringify(mockPackageJson.devDependencies, null, 2)}
+Package.json engines: ${JSON.stringify(mockPackageJson.engines, null, 2)}
+
+List of Detected Conflicts:
+${JSON.stringify(conflicts, null, 2)}
+
+Return ONLY valid JSON matching this format:
+{
+  "explainedConflicts": [
+    {
+      "originalConflict": {
+        "type": "string",
+        "severity": "high" | "medium" | "low",
+        "filePath": "string | null",
+        "description": "string",
+        "lineHint": "string (optional)"
+      },
+      "platformSpecificExplanation": "explain specifically why it matters for deployment on ${platform}",
+      "suggestedFix": "give one concrete fix",
+      "severity": "high" | "medium" | "low"
+    }
+  ],
+  "summary": "a short 1-2 sentence overall summary of the deployment readiness and conflicts"
+}
+Do not include any markdown formatting blocks like \`\`\`json outside the JSON object. Just the raw JSON.`;
+
+        try {
+          const text = await callLLMUnified({ prompt, jsonMode: true, temperature: 0.2 });
+          const parsed = cleanAndParseJSON(text);
+          if (parsed && typeof parsed === 'object') {
+            explainedConflicts = parsed.explainedConflicts || [];
+            summaryText = parsed.summary || 'Deployment analysis completed.';
+          }
+        } catch (err: unknown) {
+          console.error('Failed to parse LLM explanation:', err);
+          explainedConflicts = conflicts.map((c) => ({
+            originalConflict: c,
+            platformSpecificExplanation: `Static analysis detected a compatibility conflict of type ${c.type}. This might lead to build errors or runtime exceptions in edge environments on ${platform}.`,
+            suggestedFix: `Update ${c.filePath || 'package.json'} and adjust code to platform requirements.`,
+            severity: c.severity
+          }));
+          summaryText = 'Structural conflicts were found, but platform-specific explanation could not be completed due to an LLM error.';
+        }
+      }
+
+      // Calculate readiness score
+      let score = 100;
+      for (const c of conflicts) {
+        if (c.severity === 'high') {
+          score -= 30;
+        } else if (c.severity === 'medium') {
+          score -= 15;
+        } else if (c.severity === 'low') {
+          score -= 5;
+        }
+      }
+      const deploymentReadinessScore = Math.max(0, score);
+
+      return NextResponse.json({
+        packageJson: mockPackageJson,
+        fileTree: mockSortedPaths,
+        fileContents: mockFileContents,
+        graph,
+        conflicts,
+        explainedConflicts,
+        deploymentReadinessScore,
+        summary: `[Simulated Repo Mode] ${summaryText}`
+      });
+    }
+
     // Parse owner and repo from github URL
     const match = repoUrl.match(/github\.com\/([^\/]+)\/([^\/]+)/);
     if (!match) {

@@ -3,6 +3,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Node, GraphData, DebateLog, RoadmapItem, ExecutiveSummary } from '@/lib/types';
 import DependencyGraph from '@/components/DependencyGraph';
+import CodeDependencyGraph from '@/components/CodeDependencyGraph';
+import { CodeGraph, Conflict } from '@/lib/code-graph';
 
 const JUDGE_PRD = `PRODUCT REQUIREMENT DOCUMENT: AI Customer Support Agent
 Goal: Reduce support seat costs and lower first-response times by 80%.
@@ -92,6 +94,50 @@ function Dot({ color, pulse }: { color: string; pulse?: boolean }) {
   return <span style={{ width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block', animation: pulse ? 'pcPulse 1.5s infinite' : undefined, flexShrink: 0 }} />;
 }
 
+function CircularProgress({ value, size = 120, strokeWidth = 10 }: { value: number; size?: number; strokeWidth?: number }) {
+  const radius = (size - strokeWidth) / 2;
+  const circumference = radius * 2 * Math.PI;
+  const offset = circumference - (value / 100) * circumference;
+  
+  let color = '#10b981'; // Green
+  if (value < 50) {
+    color = '#ef4444'; // Red
+  } else if (value <= 75) {
+    color = '#f59e0b'; // Yellow/Amber
+  }
+
+  return (
+    <div style={{ position: 'relative', width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke="rgba(255, 255, 255, 0.06)"
+          strokeWidth={strokeWidth}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="transparent"
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          strokeLinecap="round"
+          style={{ transition: 'stroke-dashoffset 0.8s ease-in-out' }}
+        />
+      </svg>
+      <div style={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontSize: '1.6rem', fontWeight: 800, color: '#f0f6fc', lineHeight: 1 }}>{value}</span>
+        <span style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', marginTop: 4, letterSpacing: '0.05em' }}>Readiness</span>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [prd, setPrd] = useState('');
   const [featureRequests, setFeatureRequests] = useState('');
@@ -136,6 +182,93 @@ export default function Home() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importedRepoName, setImportedRepoName] = useState<string | null>(null);
   const [timelineInsight, setTimelineInsight] = useState('');
+
+  // Deployment Intelligence States
+  const [activeView, setActiveView] = useState<'product-council' | 'deployment-intelligence'>('product-council');
+  const [targetPlatform, setTargetPlatform] = useState<'vercel' | 'netlify' | 'railway'>('vercel');
+  const [isAnalyzingDeployment, setIsAnalyzingDeployment] = useState(false);
+  const [deploymentLoadingStep, setDeploymentLoadingStep] = useState<number>(0);
+  const [deploymentData, setDeploymentData] = useState<{
+    graph: CodeGraph;
+    conflicts: Conflict[];
+    explainedConflicts: {
+      originalConflict: Conflict;
+      platformSpecificExplanation: string;
+      suggestedFix: string;
+      severity: 'high' | 'medium' | 'low';
+    }[];
+    deploymentReadinessScore: number;
+    filesCount?: number;
+    dependenciesCount?: number;
+  } | null>(null);
+  const [deploymentError, setDeploymentError] = useState<string | null>(null);
+  const [expandedConflicts, setExpandedConflicts] = useState<Record<number, boolean>>({});
+
+  // Helper function to toggle conflict card expansion
+  const toggleConflict = (idx: number) => {
+    setExpandedConflicts(prev => ({
+      ...prev,
+      [idx]: !prev[idx]
+    }));
+  };
+
+  // Helper to color-code conflict severity badges
+  const getSeverityColor = (sev: string) => {
+    if (sev === 'high') return { bg: 'rgba(239, 68, 68, 0.15)', color: '#fca5a5', border: 'rgba(239, 68, 68, 0.4)' };
+    if (sev === 'medium') return { bg: 'rgba(245, 158, 11, 0.15)', color: '#fde047', border: 'rgba(245, 158, 11, 0.4)' };
+    return { bg: 'rgba(59, 130, 246, 0.15)', color: '#93c5fd', border: 'rgba(59, 130, 246, 0.4)' };
+  };
+
+  const handleDeploymentAnalysis = async () => {
+    if (!repoUrl.trim()) return;
+    setIsAnalyzingDeployment(true);
+    setDeploymentError(null);
+    setDeploymentData(null);
+    setActiveView('deployment-intelligence');
+    setDeploymentLoadingStep(0);
+
+    // Simulate loading sequence step transitions over a natural timeframe
+    let currentStep = 0;
+    const stepInterval = setInterval(() => {
+      if (currentStep < 3) {
+        currentStep += 1;
+        setDeploymentLoadingStep(currentStep);
+      }
+    }, 1800);
+
+    try {
+      const res = await fetch('/api/code-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          repoUrl, 
+          targetPlatform,
+          mockConflicts: true 
+        })
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to analyze deployment risk');
+      }
+
+      setDeploymentData({
+        graph: data.graph,
+        conflicts: data.conflicts,
+        explainedConflicts: data.explainedConflicts || [],
+        deploymentReadinessScore: data.deploymentReadinessScore ?? 100,
+        filesCount: data.fileContents?.length || 0,
+        dependenciesCount: Object.keys(data.packageJson?.dependencies || {}).length
+      });
+      
+    } catch (err: unknown) {
+      setDeploymentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      clearInterval(stepInterval);
+      setIsAnalyzingDeployment(false);
+    }
+  };
 
   const WALKTHROUGH_STEPS = [
     {
@@ -643,6 +776,48 @@ export default function Home() {
       <main className="pc-main">
         <div className="pc-content">
 
+          {/* TOP-LEVEL VIEW TABS */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 1 }}>
+            <button
+              onClick={() => setActiveView('product-council')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: activeView === 'product-council' ? '#c4b5fd' : '#8b949e',
+                fontSize: '0.85rem',
+                fontWeight: 700,
+                padding: '10px 18px',
+                cursor: 'pointer',
+                borderBottom: activeView === 'product-council' ? '3px solid #a78bfa' : '3px solid transparent',
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}
+            >
+              💼 Product Council Flow
+            </button>
+            <button
+              onClick={() => setActiveView('deployment-intelligence')}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: activeView === 'deployment-intelligence' ? '#38bdf8' : '#8b949e',
+                fontSize: '0.85rem',
+                fontWeight: 700,
+                padding: '10px 18px',
+                cursor: 'pointer',
+                borderBottom: activeView === 'deployment-intelligence' ? '3px solid #38bdf8' : '3px solid transparent',
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6
+              }}
+            >
+              ⚡ Deployment Intelligence
+            </button>
+          </div>
+
           {/* JUDGE WALKTHROUGH PANEL */}
           {walkthroughActive && nodes.length > 0 && (
             <div className="pc-walkthrough-card pc-fade-in">
@@ -696,101 +871,188 @@ export default function Home() {
             </div>
           )}
 
-          {/* INPUT CARD */}
-          <div className="pc-card">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
-              <h2 style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-                📝 Configure Your Product Council
+          {/* GITHUB REPOSITORY ANALYZER CARD */}
+          <div className="pc-card" style={{ background: 'rgba(30,41,59,0.15)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <h2 style={{ fontWeight: 700, fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: 8, color: '#f0f6fc' }}>
+                🔗 GitHub Repository Analyzer
               </h2>
-              {isJudgeMode && (
-                <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Dot color="#a78bfa" pulse /> Judge Mode Active
+              {importedRepoName && (
+                <span style={{ fontSize: '0.7rem', padding: '3px 8px', borderRadius: 6, background: 'rgba(56,189,248,0.08)', border: '1px solid rgba(56,189,248,0.2)', color: '#38bdf8', fontWeight: 600 }}>
+                  Active: {importedRepoName}
                 </span>
               )}
             </div>
 
-            <div style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: 16, marginBottom: 20, border: '1px solid rgba(255,255,255,0.08)' }}>
-              <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: '#c9d1d9', marginBottom: 8 }}>
-                <Dot color="#a78bfa" /> Or paste a GitHub repo URL (Public)
-              </label>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {/* Input & Platform select row */}
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
                 <input
                   type="text"
                   value={repoUrl}
                   onChange={e => setRepoUrl(e.target.value)}
                   placeholder="https://github.com/owner/repo"
-                  style={{ flex: 1, minWidth: 200, background: 'rgba(5,8,16,0.6)', border: '1px solid rgba(255,255,255,0.1)', padding: '10px 14px', borderRadius: 8, color: '#f0f6fc', fontSize: '0.85rem' }}
+                  style={{ flex: 1, minWidth: 260, background: 'rgba(5,8,16,0.65)', border: '1px solid rgba(255,255,255,0.1)', padding: '10px 14px', borderRadius: 8, color: '#f0f6fc', fontSize: '0.85rem' }}
                 />
+                
+                {/* Platform select dropdown */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: '0.76rem', color: '#8b949e', fontWeight: 600 }}>Deployment Target:</span>
+                  <select
+                    value={targetPlatform}
+                    onChange={e => setTargetPlatform(e.target.value as 'vercel' | 'netlify' | 'railway')}
+                    style={{
+                      background: 'rgba(15,23,42,0.85)',
+                      color: '#38bdf8',
+                      border: '1px solid rgba(56,189,248,0.25)',
+                      borderRadius: 6,
+                      padding: '8px 12px',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      outline: 'none',
+                    }}
+                  >
+                    <option value="vercel">Vercel</option>
+                    <option value="netlify">Netlify</option>
+                    <option value="railway">Railway</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Action Buttons Row */}
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 <button
-                  onClick={handleGithubImport}
-                  disabled={isImporting || !repoUrl.trim()}
-                  style={{ background: 'rgba(167,139,250,0.15)', border: '1px solid rgba(167,139,250,0.3)', color: '#c4b5fd', padding: '0 16px', borderRadius: 8, fontSize: '0.8rem', fontWeight: 600, cursor: isImporting || !repoUrl.trim() ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, minHeight: 40 }}
+                  onClick={async () => {
+                    setActiveView('product-council');
+                    await handleGithubImport();
+                  }}
+                  disabled={isImporting || isAnalyzingDeployment || !repoUrl.trim()}
+                  style={{
+                    flex: '1 1 180px',
+                    background: 'rgba(167,139,250,0.12)',
+                    border: '1px solid rgba(167,139,250,0.3)',
+                    color: '#c4b5fd',
+                    padding: '10px 16px',
+                    borderRadius: 8,
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    cursor: isImporting || isAnalyzingDeployment || !repoUrl.trim() ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    transition: 'all 0.2s',
+                    opacity: isImporting || isAnalyzingDeployment || !repoUrl.trim() ? 0.55 : 1
+                  }}
                 >
-                  {isImporting ? <><Spinner color="#c4b5fd" size={14} /> Reading repo...</> : 'Generate from Repo'}
+                  {isImporting ? <><Spinner color="#c4b5fd" size={14} /> Reading repo...</> : <>💼 Analyze Product Risk</>}
+                </button>
+                
+                <button
+                  onClick={handleDeploymentAnalysis}
+                  disabled={isImporting || isAnalyzingDeployment || !repoUrl.trim()}
+                  style={{
+                    flex: '1 1 180px',
+                    background: 'rgba(56,189,248,0.12)',
+                    border: '1px solid rgba(56,189,248,0.3)',
+                    color: '#38bdf8',
+                    padding: '10px 16px',
+                    borderRadius: 8,
+                    fontSize: '0.8rem',
+                    fontWeight: 700,
+                    cursor: isImporting || isAnalyzingDeployment || !repoUrl.trim() ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    transition: 'all 0.2s',
+                    opacity: isImporting || isAnalyzingDeployment || !repoUrl.trim() ? 0.55 : 1
+                  }}
+                >
+                  {isAnalyzingDeployment ? <><Spinner color="#38bdf8" size={14} /> Scanning code...</> : <>🚀 Analyze Deployment Risk</>}
                 </button>
               </div>
-              {importError && (
-                <div style={{ marginTop: 8, fontSize: '0.75rem', color: '#fca5a5' }}>
-                  {importError}
+
+              {/* Warnings and errors */}
+              {(importError || deploymentError) && (
+                <div style={{ fontSize: '0.75rem', color: '#fca5a5', padding: '10px 14px', background: 'rgba(239,68,68,0.06)', borderRadius: 6, border: '1px solid rgba(239,68,68,0.18)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  🚨 <strong>Error:</strong> {importError || deploymentError}
                 </div>
               )}
             </div>
-
-            {timelineInsight && (
-              <div className="pc-fade-in" style={{ background: 'rgba(52,211,153,0.06)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 700, color: '#34d399', marginBottom: 8 }}>
-                  📅 Timeline Insight
-                </div>
-                <p style={{ fontSize: '0.85rem', color: '#c9d1d9', lineHeight: 1.6 }}>{timelineInsight}</p>
-              </div>
-            )}
-
-            <div className="pc-input-grid">
-              {INPUT_FIELDS.map(({ id, label, placeholder, value, setter, color }) => (
-                <div key={id} className="pc-input-field">
-                  <label htmlFor={id} className="pc-input-label" style={{ color }}>
-                    <Dot color={color} />
-                    {label}
-                  </label>
-                  <textarea
-                    id={id} className="pc-textarea" rows={9}
-                    value={value} onChange={e => setter(e.target.value)}
-                    placeholder={placeholder}
-                    onFocus={e => (e.target.style.borderColor = color)}
-                    onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.08)')}
-                  />
-                  {value.length > 0 && (
-                    <span style={{ fontSize: '0.65rem', textAlign: 'right', fontFamily: 'monospace', color }}>{value.length} chars</span>
-                  )}
-                </div>
-              ))}
-            </div>
-
-            {importedRepoName && (
-              <div style={{ marginTop: 12, textAlign: 'center', fontSize: '0.75rem', color: '#8b949e', fontStyle: 'italic' }}>
-                Generated from <strong>{importedRepoName}</strong> — edit before running if needed.
-              </div>
-            )}
-
-            <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
-              <button className="pc-btn-run" id="run-analysis-btn" onClick={runAnalysis}
-                disabled={loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()}>
-                {loading ? (
-                  <><Spinner color="#fff" size={16} /> Council in session...</>
-                ) : (
-                  <>
-                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Convene the AI Boardroom
-                  </>
-                )}
-              </button>
-            </div>
           </div>
 
+          {/* PRODUCT COUNCIL FLOW CONFIGURATION CARD */}
+          {activeView === 'product-council' && (
+            <div className="pc-card">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+                <h2 style={{ fontWeight: 700, fontSize: '0.95rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+                  📝 Configure Your Product Council
+                </h2>
+                {isJudgeMode && (
+                  <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: 'rgba(167,139,250,0.12)', border: '1px solid rgba(167,139,250,0.3)', color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <Dot color="#a78bfa" pulse /> Judge Mode Active
+                  </span>
+                )}
+              </div>
+
+              {timelineInsight && (
+                <div className="pc-fade-in" style={{ background: 'rgba(52,211,153,0.06)', border: '1px solid rgba(52,211,153,0.3)', borderRadius: 12, padding: 16, marginBottom: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', fontWeight: 700, color: '#34d399', marginBottom: 8 }}>
+                    📅 Timeline Insight
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: '#c9d1d9', lineHeight: 1.6 }}>{timelineInsight}</p>
+                </div>
+              )}
+
+              <div className="pc-input-grid">
+                {INPUT_FIELDS.map(({ id, label, placeholder, value, setter, color }) => (
+                  <div key={id} className="pc-input-field">
+                    <label htmlFor={id} className="pc-input-label" style={{ color }}>
+                      <Dot color={color} />
+                      {label}
+                    </label>
+                    <textarea
+                      id={id} className="pc-textarea" rows={9}
+                      value={value} onChange={e => setter(e.target.value)}
+                      placeholder={placeholder}
+                      onFocus={e => (e.target.style.borderColor = color)}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.08)')}
+                    />
+                    {value.length > 0 && (
+                      <span style={{ fontSize: '0.65rem', textAlign: 'right', fontFamily: 'monospace', color }}>{value.length} chars</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {importedRepoName && (
+                <div style={{ marginTop: 12, textAlign: 'center', fontSize: '0.75rem', color: '#8b949e', fontStyle: 'italic' }}>
+                  Generated from <strong>{importedRepoName}</strong> — edit before running if needed.
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: 24 }}>
+                <button className="pc-btn-run" id="run-analysis-btn" onClick={runAnalysis}
+                  disabled={loading || !prd.trim() || !featureRequests.trim() || !feedback.trim()}>
+                  {loading ? (
+                    <><Spinner color="#fff" size={16} /> Council in session...</>
+                  ) : (
+                    <>
+                      <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Convene the AI Boardroom
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ERROR */}
-          {error && (
+          {activeView === 'product-council' && error && (
             <div className="pc-error" style={{ background: 'rgba(248,113,113,0.06)', border: '1px solid rgba(248,113,113,0.3)', color: '#fca5a5' }}>
               <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
@@ -800,7 +1062,7 @@ export default function Home() {
           )}
 
           {/* PIPELINE PROGRESS */}
-          {loading && (
+          {activeView === 'product-council' && loading && (
             <div className="pc-pipeline">
               {STEPS.map((step, i) => {
                 const done = activeStep > step.id; const active = activeStep === step.id;
@@ -819,7 +1081,7 @@ export default function Home() {
           )}
 
           {/* RESULTS */}
-          {showResults && (
+          {activeView === 'product-council' && showResults && (
             <div className="pc-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
 
               {/* UPGRADED STRATEGIC SCORE DASHBOARD */}
@@ -1517,6 +1779,180 @@ export default function Home() {
                     )}
                   </div>
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* DEPLOYMENT INTELLIGENCE VIEW */}
+          {activeView === 'deployment-intelligence' && (
+            <div className="pc-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+              
+              {/* LOADING STATE */}
+              {isAnalyzingDeployment && (
+                <div className="pc-card" style={{ padding: '2.5rem', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20 }}>
+                  <Spinner color="#38bdf8" size={32} />
+                  <div style={{ textAlign: 'center' }}>
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#f0f6fc', marginBottom: 4 }}>Analyzing Repository Deployment Risk</h3>
+                    <p style={{ fontSize: '0.8rem', color: '#8b949e' }}>Running static code analysis & platform check...</p>
+                  </div>
+                  
+                  {/* Loading Steps Sequence */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, width: '100%', maxWidth: 700, marginTop: 15, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 20 }}>
+                    {[
+                      { label: 'Fetching repository files...', icon: '📦' },
+                      { label: 'Parsing import graph...', icon: '🧬' },
+                      { label: 'Detecting conflicts...', icon: '🚨' },
+                      { label: 'Generating platform-specific guidance...', icon: '🤖' }
+                    ].map((step, idx) => {
+                      const isActive = deploymentLoadingStep === idx;
+                      const isDone = deploymentLoadingStep > idx;
+                      const stepColor = isActive ? '#38bdf8' : isDone ? '#10b981' : '#484f58';
+                      return (
+                        <div key={idx} style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 140 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, fontSize: '0.76rem', fontWeight: 600, color: stepColor, background: isActive ? 'rgba(56,189,248,0.08)' : 'transparent', border: isActive ? '1px solid rgba(56,189,248,0.2)' : '1px solid transparent', whiteSpace: 'nowrap' }}>
+                            <span>{isDone ? '✓' : step.icon}</span>
+                            <span>{step.label}</span>
+                            {isActive && <Dot color="#38bdf8" pulse />}
+                          </div>
+                          {idx < 3 && (
+                            <div style={{ flex: 1, height: 1, background: isDone ? '#10b981' : 'rgba(255,255,255,0.06)', margin: '0 8px' }} />
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* EMPTY STATE */}
+              {!isAnalyzingDeployment && !deploymentData && !deploymentError && (
+                <div className="pc-card" style={{ padding: '3.5rem 2rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+                  <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(56,189,248,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid rgba(56,189,248,0.2)', marginBottom: 8 }}>
+                    <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="#38bdf8" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 18a3.75 3.75 0 00.495-7.467 5.99 5.99 0 00-1.925 3.546 5.974 5.974 0 01-2.133-1A3.75 3.75 0 0012 18z" />
+                    </svg>
+                  </div>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: '#f0f6fc' }}>Ready for Deployment Analysis</h3>
+                  <p style={{ fontSize: '0.82rem', color: '#8b949e', maxWidth: 450, lineHeight: 1.5 }}>
+                    Enter a public GitHub repository URL above, choose Vercel, Netlify, or Railway, and click <strong>Analyze Deployment Risk</strong> to scan imports, detect client-side Node.js environment issues, and generate platform-specific remediation guidance.
+                  </p>
+                </div>
+              )}
+
+              {/* DEPLOYMENT READINESS DASHBOARD & GRAPH */}
+              {!isAnalyzingDeployment && deploymentData && (
+                <>
+                  {/* DASHBOARD SECTION */}
+                  <div className="pc-card" style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'stretch' }}>
+                    
+                    {/* Score and Stats */}
+                    <div style={{ flex: '1 1 250px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '10px 0', borderRight: '1px solid rgba(255,255,255,0.06)' }}>
+                      <CircularProgress value={deploymentData.deploymentReadinessScore} />
+                      
+                      {/* Stat Row */}
+                      <div style={{ display: 'flex', gap: 14, marginTop: 20, width: '100%', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 16 }}>
+                        <div style={{ textAlign: 'center' }}>
+                          <span style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Files Scanned</span>
+                          <span style={{ fontSize: '0.95rem', fontWeight: 700, color: '#38bdf8' }}>{deploymentData.filesCount ?? 0}</span>
+                        </div>
+                        <div style={{ width: 1, background: 'rgba(255,255,255,0.06)' }} />
+                        <div style={{ textAlign: 'center' }}>
+                          <span style={{ fontSize: '0.62rem', color: '#8b949e', textTransform: 'uppercase', display: 'block', marginBottom: 2 }}>Dependencies</span>
+                          <span style={{ fontSize: '0.95rem', fontWeight: 700, color: '#38bdf8' }}>{deploymentData.dependenciesCount ?? 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Conflicts list */}
+                    <div style={{ flex: '2 1 450px', display: 'flex', flexDirection: 'column' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                        <h3 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#f0f6fc', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          ⚠️ Platform Compatibility Issues ({deploymentData.conflicts.length})
+                        </h3>
+                        <span style={{ fontSize: '0.72rem', color: '#8b949e' }}>Target: <strong style={{ color: '#38bdf8', textTransform: 'capitalize' }}>{targetPlatform}</strong></span>
+                      </div>
+                      
+                      {deploymentData.conflicts.length === 0 ? (
+                        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(16,185,129,0.04)', border: '1px solid rgba(16,185,129,0.15)', borderRadius: 8, padding: 20 }}>
+                          <p style={{ fontSize: '0.8rem', color: '#a7f3d0', textAlign: 'center' }}>
+                            🎉 Outstanding! No deployment conflicts or architectural compatibility issues were detected in this codebase.
+                          </p>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', maxHeight: 280, paddingRight: 4 }}>
+                          {(() => {
+                            const sortedConflicts = [...deploymentData.explainedConflicts].sort((a, b) => {
+                              const severityOrder = { high: 1, medium: 2, low: 3 };
+                              const aVal = severityOrder[a.severity] || 4;
+                              const bVal = severityOrder[b.severity] || 4;
+                              return aVal - bVal;
+                            });
+                            
+                            return sortedConflicts.map((c, idx) => {
+                              const isOpen = expandedConflicts[idx] !== false; // Default to open
+                              const badgeStyle = getSeverityColor(c.severity);
+                              
+                              return (
+                                <div key={idx} style={{ background: 'rgba(5,8,16,0.3)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8, overflow: 'hidden' }}>
+                                  {/* Card Header */}
+                                  <div 
+                                    onClick={() => toggleConflict(idx)}
+                                    style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', cursor: 'pointer', background: 'rgba(255,255,255,0.02)' }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flex: 1, marginRight: 12 }}>
+                                      <span style={{ fontSize: '0.62rem', fontWeight: 700, padding: '2px 6px', borderRadius: 4, background: badgeStyle.bg, color: badgeStyle.color, border: `1px solid ${badgeStyle.border}`, textTransform: 'uppercase' }}>
+                                        {c.severity}
+                                      </span>
+                                      <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#c9d1d9', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                                        {c.originalConflict?.filePath || 'Workspace'}
+                                      </span>
+                                      <span style={{ fontSize: '0.62rem', color: '#8b949e', background: 'rgba(255,255,255,0.05)', padding: '1px 5px', borderRadius: 3, fontFamily: 'monospace' }}>
+                                        {c.originalConflict?.type || 'Configuration Issue'}
+                                      </span>
+                                    </div>
+                                    <span style={{ fontSize: '0.72rem', color: '#8b949e', userSelect: 'none' }}>
+                                      {isOpen ? '▲' : '▼'}
+                                    </span>
+                                  </div>
+                                  
+                                  {/* Card Body */}
+                                  {isOpen && (
+                                    <div style={{ padding: '12px 14px', borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                        <span style={{ fontSize: '0.65rem', color: '#8b949e', textTransform: 'uppercase', fontWeight: 700 }}>Platform Explanation</span>
+                                        <p style={{ fontSize: '0.78rem', color: '#cbd5e1', lineHeight: 1.45 }}>{c.platformSpecificExplanation}</p>
+                                      </div>
+                                      
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: 8 }}>
+                                        <span style={{ fontSize: '0.65rem', color: '#38bdf8', textTransform: 'uppercase', fontWeight: 700 }}>Suggested Fix</span>
+                                        <p style={{ fontSize: '0.78rem', color: '#38bdf8', fontWeight: 500, lineHeight: 1.45 }}>✓ {c.suggestedFix}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* GRAPH SECTION */}
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                      <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 4, background: 'rgba(56,189,248,0.1)', color: '#38bdf8', border: '1px solid rgba(56,189,248,0.25)' }}>02</span>
+                      <h3 style={{ fontSize: '0.9rem', fontWeight: 700, color: '#f0f6fc' }}>Static Code Dependency Graph</h3>
+                    </div>
+                    <div className="pc-card" style={{ padding: 12 }}>
+                      <CodeDependencyGraph 
+                        graph={deploymentData.graph} 
+                        conflicts={deploymentData.conflicts} 
+                        explainedConflicts={deploymentData.explainedConflicts} 
+                      />
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           )}
